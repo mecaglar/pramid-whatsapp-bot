@@ -31,7 +31,7 @@ def verify_webhook(request: Request):
 @app.post("/webhook")
 async def receive_message(request: Request):
     data = await request.json()
-    print("Gelen veri:", data)
+    print("Gelen veri:", data, flush=True)
 
     try:
         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
@@ -84,4 +84,4 @@ def send_whatsapp_message(to: str, body: str):
     }
 
     response = requests.post(url, headers=headers, json=payload)
-    print("WhatsApp cevap:", response.status_code, response.text)
+    print("WhatsApp cevap:", response.status_code, response.text, flush=True)
