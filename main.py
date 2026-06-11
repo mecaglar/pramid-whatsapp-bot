@@ -2,6 +2,7 @@ import os
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
+from difflib import SequenceMatcher
 
 app = FastAPI()
 
@@ -141,23 +142,192 @@ def find_measure_from_line(line):
     return measure, qty
 
 
+RADYATOR_FILE = "fiyat_listesi.xlsx"
+KOMBI_FILE = "kombi_listesi.xlsx"
+
+
+def money(value):
+    return f"{int(round(value)):,}".replace(",", ".") + " TL"
+
+
+def normalize_text(text):
+    text = str(text).lower()
+    replacements = {
+        "ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c",
+        "kw": " kw ", "kW": " kw "
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def extract_quantity(text):
+    clean = normalize_text(text)
+
+    patterns = [
+        r"(\d+)\s*(adet|ad|tane|tn)",
+        r"(adet|ad|tane|tn)\s*(\d+)"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, clean)
+        if match:
+            nums = re.findall(r"\d+", match.group(0))
+            if nums:
+                return int(nums[0]), clean.replace(match.group(0), " ")
+
+    nums = [int(n) for n in re.findall(r"\d+", clean)]
+
+    if len(nums) >= 3:
+        if nums[0] <= 50:
+            return nums[0], clean
+        if nums[-1] <= 50:
+            return nums[-1], clean
+
+    return 1, clean
+
+
+def normalize_dimension(n):
+    n = int(n)
+
+    if n in [50, 60, 90]:
+        return n * 10
+
+    if n in [100, 120, 140, 160, 180, 200]:
+        return n * 10
+
+    return n
+
+
+def find_radiator_measure(line):
+    qty, clean = extract_quantity(line)
+
+    clean = clean.replace("x", " ")
+    clean = clean.replace("*", " ")
+    clean = clean.replace("/", " ")
+    clean = clean.replace(" a ", " ")
+
+    nums = [int(n) for n in re.findall(r"\d+", clean)]
+
+    # adet başta/sonda yazıldıysa ölçü için adet sayısını ele
+    if len(nums) >= 3:
+        if nums[0] == qty:
+            nums = nums[1:]
+        elif nums[-1] == qty:
+            nums = nums[:-1]
+
+    if len(nums) < 2:
+        return None, qty
+
+    d1 = normalize_dimension(nums[0])
+    d2 = normalize_dimension(nums[1])
+
+    small = min(d1, d2)
+    big = max(d1, d2)
+
+    return f"{small}X{big}", qty
+
+
+def load_radiators():
+    df = pd.read_excel(RADYATOR_FILE)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    products = []
+
+    for _, row in df.iterrows():
+        olcu = str(row["ÖLÇÜ"]).strip().upper().replace(" ", "")
+        liste = float(row["LİSTE FİYATI"])
+        nakit_iskonto = float(row["NAKİT İSKONTO"])
+        kart_iskonto = float(row["KART İSKONTO"])
+
+        nakit = liste * (1 - nakit_iskonto / 100)
+        kart = liste * (1 - kart_iskonto / 100)
+
+        products.append({
+            "olcu": olcu,
+            "nakit": round(nakit),
+            "kart": round(kart),
+        })
+
+    return products
+
+
+def load_kombis():
+    df = pd.read_excel(KOMBI_FILE)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    products = []
+
+    for _, row in df.iterrows():
+        name = str(row["ÜRÜN ADI"]).strip()
+        kw = str(row["ÜRÜN KW"]).strip()
+
+        full_name = f"{name} {kw} KW"
+
+        products.append({
+            "name": full_name,
+            "search": normalize_text(full_name),
+            "nakit": float(row["NAKİT FİYAT"]),
+            "kart": float(row["KART FİYAT"]),
+        })
+
+    return products
+
+
+def similarity(a, b):
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def find_kombi(text):
+    qty, clean = extract_quantity(text)
+    kombis = load_kombis()
+
+    best_product = None
+    best_score = 0
+
+    for product in kombis:
+        score = similarity(clean, product["search"])
+
+        # Ürün adı içinden parçalı yakalama
+        words = product["search"].split()
+        matched_words = sum(1 for w in words if w in clean)
+        score += matched_words * 0.12
+
+        if score > best_score:
+            best_score = score
+            best_product = product
+
+    if best_score >= 0.45:
+        return best_product, qty
+
+    return None, qty
+
+
 def create_reply(text: str) -> str:
-    products = load_products()
+    text_lower = normalize_text(text)
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    results = []
+    radiator_products = load_radiators()
+
+    radiator_results = []
+    kombi_results = []
+
     total_nakit = 0
     total_kart = 0
     not_found = []
 
+    # Önce radyatör ölçülerini satır satır ara
     for line in lines:
-        measure, qty = find_measure_from_line(line)
+        measure, qty = find_radiator_measure(line)
 
         if not measure:
             continue
 
-        product = next((p for p in products if p["olcu"] == measure), None)
+        product = next((p for p in radiator_products if p["olcu"] == measure), None)
 
         if not product:
             not_found.append(measure)
@@ -169,8 +339,8 @@ def create_reply(text: str) -> str:
         total_nakit += nakit_total
         total_kart += kart_total
 
-        results.append(
-            f"{measure}\n"
+        radiator_results.append(
+            f"Radyatör {measure}\n"
             f"Adet: {qty}\n"
             f"Nakit Birim: {money(product['nakit'])} KDV Dahil\n"
             f"Kart Birim: {money(product['kart'])} KDV Dahil\n"
@@ -178,9 +348,26 @@ def create_reply(text: str) -> str:
             f"Kart Toplam: {money(kart_total)} KDV Dahil"
         )
 
-    if results:
-        reply = "Radyatör Fiyat Teklifi\n\n"
-        reply += "\n\n".join(results)
+    # Eğer radyatör bulunmadıysa kombi ara
+    if not radiator_results:
+        kombi, qty = find_kombi(text)
+
+        if kombi:
+            nakit_total = kombi["nakit"] * qty
+            kart_total = kombi["kart"] * qty
+
+            return (
+                f"{kombi['name']}\n\n"
+                f"Adet: {qty}\n"
+                f"Nakit Birim: {money(kombi['nakit'])} KDV Dahil\n"
+                f"Kart Birim: {money(kombi['kart'])} KDV Dahil\n"
+                f"Nakit Toplam: {money(nakit_total)} KDV Dahil\n"
+                f"Kart Toplam: {money(kart_total)} KDV Dahil"
+            )
+
+    if radiator_results:
+        reply = "Fiyat Teklifi\n\n"
+        reply += "\n\n".join(radiator_results)
 
         reply += (
             "\n\nGenel Toplam\n"
@@ -194,39 +381,25 @@ def create_reply(text: str) -> str:
 
         return reply
 
-    if "merhaba" in text.lower() or "selam" in text.lower() or "sa" == text.lower().strip():
+    if "merhaba" in text_lower or "selam" in text_lower or text_lower == "sa":
         return (
-            "Merhaba, Pramid İnşaat radyatör fiyat botuna hoş geldiniz.\n\n"
-            "Ölçü ve adet bilgisi yazabilirsiniz.\n\n"
-            "Örnek:\n"
+            "Merhaba, Pramid İnşaat fiyat botuna hoş geldiniz.\n\n"
+            "Radyatör için adet ve ölçü yazabilirsiniz:\n"
             "3 tane 100 60\n"
-            "2 adet 2000 1200\n"
-            "5 adet 90 a 100"
+            "600x1000 2 adet\n\n"
+            "Kombi için ürün adını yazabilirsiniz:\n"
+            "Proteus Premix 24\n"
+            "Citius 28"
         )
 
     return (
-        "Radyatör fiyatı verebilmem için adet ve ölçü yazınız.\n\n"
-        "Örnek:\n"
+        "Fiyat verebilmem için ürün bilgisini yazınız.\n\n"
+        "Radyatör örnek:\n"
         "3 tane 100 60\n"
-        "2 adet 2000 1200\n"
-        "5 adet 90 a 100"
+        "600x1000 2 adet\n\n"
+        "Kombi örnek:\n"
+        "Proteus Premix 24\n"
+        "Confeo 30"
     )
-
-
-def send_whatsapp_message(to: str, body: str):
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": body},
-    }
-
     response = requests.post(url, headers=headers, json=payload)
     print("WhatsApp cevap:", response.status_code, response.text, flush=True)
