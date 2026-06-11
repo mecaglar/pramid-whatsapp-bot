@@ -47,24 +47,50 @@ async def receive_message(request: Request):
     return {"status": "ok"}
 
 
+PRODUCTS = {
+    "eca proteus premix 24": {
+        "name": "E.C.A. Proteus Premix 24 kW",
+        "price": "36.900 TL + KDV",
+    },
+    "eca proteus premix 28": {
+        "name": "E.C.A. Proteus Premix 28 kW",
+        "price": "39.900 TL + KDV",
+    },
+    "airfel kombi": {
+        "name": "Airfel Kombi",
+        "price": "31.500 TL + KDV",
+    },
+}
+
+
 def create_reply(text: str) -> str:
-    text = text.lower()
+    text = text.lower().strip()
+
+    for keyword, product in PRODUCTS.items():
+        if keyword in text:
+            return (
+                f"{product['name']}\n"
+                f"Fiyat: {product['price']}\n\n"
+                "Adet ve teslimat ilini yazarsanız toplam tutarı da hesaplayabilirim."
+            )
 
     if "fiyat" in text:
         return (
-            "Merhaba, fiyat bilgisi için ürün adını yazabilir misiniz?\n\n"
+            "Fiyat verebilmem için ürün adını yazar mısınız?\n\n"
             "Örnek: ECA Proteus Premix 24 fiyat"
         )
 
     if "merhaba" in text or "selam" in text:
         return (
             "Merhaba, Pramid İnşaat WhatsApp fiyat botuna hoş geldiniz.\n\n"
-            "Fiyat almak istediğiniz ürün adını yazabilirsiniz."
+            "Fiyat almak için ürün adını yazabilirsiniz.\n"
+            "Örnek: ECA Proteus Premix 24 fiyat"
         )
 
     return (
-        "Mesajınızı aldım. Fiyat almak için ürün adını ve adet bilgisini yazabilirsiniz.\n\n"
-        "Örnek: 10 adet ECA Proteus Premix 24 fiyat"
+        "Mesajınızı aldım.\n\n"
+        "Fiyat almak için ürün adını yazabilirsiniz.\n"
+        "Örnek: ECA Proteus Premix 24 fiyat"
     )
 
 
