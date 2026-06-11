@@ -392,7 +392,7 @@ def create_reply(text: str) -> str:
             "Citius 28"
         )
 
-    return (
+     return (
         "Fiyat verebilmem için ürün bilgisini yazınız.\n\n"
         "Radyatör örnek:\n"
         "3 tane 100 60\n"
@@ -401,7 +401,9 @@ def create_reply(text: str) -> str:
         "Proteus Premix 24\n"
         "Confeo 30"
     )
-   def send_whatsapp_message(to: str, body: str):
+
+
+def send_whatsapp_message(to: str, body: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
 
     headers = {
