@@ -63,34 +63,153 @@ PRODUCTS = {
 }
 
 
+import pandas as pd
+import re
+
+EXCEL_FILE = "fiyat_listesi.xlsx"
+
+
+def load_products():
+    df = pd.read_excel(EXCEL_FILE)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    products = []
+
+    for _, row in df.iterrows():
+        olcu = str(row["ÖLÇÜ"]).strip().upper().replace(" ", "")
+        liste = float(row["LİSTE FİYATI"])
+        nakit_iskonto = float(row["NAKİT İSKONTO"])
+        kart_iskonto = float(row["KART İSKONTO"])
+
+        nakit = liste * (1 - nakit_iskonto / 100)
+        kart = liste * (1 - kart_iskonto / 100)
+
+        products.append({
+            "olcu": olcu,
+            "nakit": round(nakit),
+            "kart": round(kart),
+        })
+
+    return products
+
+
+def money(value):
+    return f"{int(value):,}".replace(",", ".") + " TL"
+
+
+def normalize_dimension(n):
+    n = int(n)
+
+    if n in [50, 60, 90]:
+        return n * 10
+
+    if n in [100, 120, 140, 160, 180, 200]:
+        return n * 10
+
+    return n
+
+
+def find_measure_from_line(line):
+    clean = line.lower()
+    clean = clean.replace("x", " ")
+    clean = clean.replace("*", " ")
+    clean = clean.replace("/", " ")
+    clean = clean.replace("a", " ")
+
+    nums = re.findall(r"\d+", clean)
+    nums = [int(n) for n in nums]
+
+    if len(nums) < 2:
+        return None, 1
+
+    qty = 1
+
+    if len(nums) >= 3:
+        qty = nums[0]
+        dims = nums[1:3]
+    else:
+        dims = nums[0:2]
+
+    d1 = normalize_dimension(dims[0])
+    d2 = normalize_dimension(dims[1])
+
+    small = min(d1, d2)
+    big = max(d1, d2)
+
+    measure = f"{small}X{big}"
+
+    return measure, qty
+
+
 def create_reply(text: str) -> str:
-    text = text.lower().strip()
+    products = load_products()
 
-    for keyword, product in PRODUCTS.items():
-        if keyword in text:
-            return (
-                f"{product['name']}\n"
-                f"Fiyat: {product['price']}\n\n"
-                "Adet ve teslimat ilini yazarsanız toplam tutarı da hesaplayabilirim."
-            )
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    if "fiyat" in text:
-        return (
-            "Fiyat verebilmem için ürün adını yazar mısınız?\n\n"
-            "Örnek: ECA Proteus Premix 24 fiyat"
+    results = []
+    total_nakit = 0
+    total_kart = 0
+    not_found = []
+
+    for line in lines:
+        measure, qty = find_measure_from_line(line)
+
+        if not measure:
+            continue
+
+        product = next((p for p in products if p["olcu"] == measure), None)
+
+        if not product:
+            not_found.append(measure)
+            continue
+
+        nakit_total = product["nakit"] * qty
+        kart_total = product["kart"] * qty
+
+        total_nakit += nakit_total
+        total_kart += kart_total
+
+        results.append(
+            f"{measure}\n"
+            f"Adet: {qty}\n"
+            f"Nakit Birim: {money(product['nakit'])} KDV Dahil\n"
+            f"Kart Birim: {money(product['kart'])} KDV Dahil\n"
+            f"Nakit Toplam: {money(nakit_total)} KDV Dahil\n"
+            f"Kart Toplam: {money(kart_total)} KDV Dahil"
         )
 
-    if "merhaba" in text or "selam" in text:
+    if results:
+        reply = "Radyatör Fiyat Teklifi\n\n"
+        reply += "\n\n".join(results)
+
+        reply += (
+            "\n\nGenel Toplam\n"
+            f"Nakit: {money(total_nakit)} KDV Dahil\n"
+            f"Kart: {money(total_kart)} KDV Dahil"
+        )
+
+        if not_found:
+            reply += "\n\nBulunamayan ölçüler:\n"
+            reply += "\n".join(not_found)
+
+        return reply
+
+    if "merhaba" in text.lower() or "selam" in text.lower() or "sa" == text.lower().strip():
         return (
-            "Merhaba, Pramid İnşaat WhatsApp fiyat botuna hoş geldiniz.\n\n"
-            "Fiyat almak için ürün adını yazabilirsiniz.\n"
-            "Örnek: ECA Proteus Premix 24 fiyat"
+            "Merhaba, Pramid İnşaat radyatör fiyat botuna hoş geldiniz.\n\n"
+            "Ölçü ve adet bilgisi yazabilirsiniz.\n\n"
+            "Örnek:\n"
+            "3 tane 100 60\n"
+            "2 adet 2000 1200\n"
+            "5 adet 90 a 100"
         )
 
     return (
-        "Mesajınızı aldım.\n\n"
-        "Fiyat almak için ürün adını yazabilirsiniz.\n"
-        "Örnek: ECA Proteus Premix 24 fiyat"
+        "Radyatör fiyatı verebilmem için adet ve ölçü yazınız.\n\n"
+        "Örnek:\n"
+        "3 tane 100 60\n"
+        "2 adet 2000 1200\n"
+        "5 adet 90 a 100"
     )
 
 
