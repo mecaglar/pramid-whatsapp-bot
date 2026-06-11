@@ -392,7 +392,7 @@ def create_reply(text: str) -> str:
             "Citius 28"
         )
 
-     return (
+    return (
         "Fiyat verebilmem için ürün bilgisini yazınız.\n\n"
         "Radyatör örnek:\n"
         "3 tane 100 60\n"
