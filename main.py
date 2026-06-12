@@ -3,6 +3,7 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from difflib import SequenceMatcher
+processed_message_ids = set()
 
 app = FastAPI()
 
@@ -35,7 +36,21 @@ async def receive_message(request: Request):
     print("Gelen veri:", data, flush=True)
 
     try:
-        message = data["entry"][0]["changes"][0]["value"]["messages"][0]
+        value = data["entry"][0]["changes"][0]["value"]
+
+        if "messages" not in value:
+            print("Mesaj değil, durum bildirimi geldi.", flush=True)
+            return {"status": "ok"}
+
+        message = value["messages"][0]
+        message_id = message.get("id")
+
+        if message_id in processed_message_ids:
+            print("Tekrarlanan mesaj, cevap verilmedi:", message_id, flush=True)
+            return {"status": "ok"}
+
+        processed_message_ids.add(message_id)
+
         sender = message["from"]
         text = message.get("text", {}).get("body", "")
 
@@ -43,7 +58,7 @@ async def receive_message(request: Request):
         send_whatsapp_message(sender, reply)
 
     except Exception as e:
-        print("Hata:", e)
+        print("Hata:", e, flush=True)
 
     return {"status": "ok"}
 
