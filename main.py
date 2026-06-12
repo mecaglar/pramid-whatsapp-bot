@@ -323,7 +323,6 @@ def find_kombi(text):
 
 def create_reply(text: str) -> str:
     text_lower = normalize_text(text)
-
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     radiator_products = load_radiators()
@@ -335,7 +334,7 @@ def create_reply(text: str) -> str:
     total_kart = 0
     not_found = []
 
-    # Önce radyatör ölçülerini satır satır ara
+    # Radyatörleri satır satır ara
     for line in lines:
         measure, qty = find_radiator_measure(line)
 
@@ -363,26 +362,37 @@ def create_reply(text: str) -> str:
             f"Kart Toplam: {money(kart_total)} KDV Dahil"
         )
 
-    # Eğer radyatör bulunmadıysa kombi ara
-    if not radiator_results:
-        kombi, qty = find_kombi(text)
+    # Kombiyi de ayrıca ara
+    kombi, kombi_qty = find_kombi(text)
 
-        if kombi:
-            nakit_total = kombi["nakit"] * qty
-            kart_total = kombi["kart"] * qty
+    if kombi:
+        kombi_nakit_total = kombi["nakit"] * kombi_qty
+        kombi_kart_total = kombi["kart"] * kombi_qty
 
-            return (
-                f"{kombi['name']}\n\n"
-                f"Adet: {qty}\n"
-                f"Nakit Birim: {money(kombi['nakit'])} KDV Dahil\n"
-                f"Kart Birim: {money(kombi['kart'])} KDV Dahil\n"
-                f"Nakit Toplam: {money(nakit_total)} KDV Dahil\n"
-                f"Kart Toplam: {money(kart_total)} KDV Dahil"
-            )
+        total_nakit += kombi_nakit_total
+        total_kart += kombi_kart_total
 
-    if radiator_results:
+        kombi_results.append(
+            f"{kombi['name']}\n"
+            f"Adet: {kombi_qty}\n"
+            f"Nakit Birim: {money(kombi['nakit'])} KDV Dahil\n"
+            f"Kart Birim: {money(kombi['kart'])} KDV Dahil\n"
+            f"Nakit Toplam: {money(kombi_nakit_total)} KDV Dahil\n"
+            f"Kart Toplam: {money(kombi_kart_total)} KDV Dahil"
+        )
+
+    if radiator_results or kombi_results:
         reply = "Fiyat Teklifi\n\n"
-        reply += "\n\n".join(radiator_results)
+
+        if radiator_results:
+            reply += "RADYATÖR\n\n"
+            reply += "\n\n".join(radiator_results)
+
+        if kombi_results:
+            if radiator_results:
+                reply += "\n\n"
+            reply += "KOMBİ\n\n"
+            reply += "\n\n".join(kombi_results)
 
         reply += (
             "\n\nGenel Toplam\n"
@@ -416,7 +426,6 @@ def create_reply(text: str) -> str:
         "Proteus Premix 24\n"
         "Confeo 30"
     )
-
 
 def send_whatsapp_message(to: str, body: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
