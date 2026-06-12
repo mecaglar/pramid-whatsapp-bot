@@ -435,12 +435,15 @@ def send_whatsapp_message(to: str, body: str):
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": body},
-    }
+    parts = [body[i:i+3000] for i in range(0, len(body), 3000)]
 
-    response = requests.post(url, headers=headers, json=payload)
-    print("WhatsApp cevap:", response.status_code, response.text, flush=True)
+    for part in parts:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": part},
+        }
+
+        response = requests.post(url, headers=headers, json=payload)
+        print("WhatsApp cevap:", response.status_code, response.text, flush=True)
