@@ -289,9 +289,46 @@ def parse_kazan_request(text):
 
 
 def norm_cols(df):
+    # Sütun adlarını elle değiştirmiyoruz; sadece baş/son boşlukları temizliyoruz.
+    # Böylece ListeFiyatı / Liste Fiyatı gibi Excel yazım farklarını yardımcı fonksiyonlarla yakalayabiliyoruz.
     df = df.copy()
-    df.columns = [str(c).strip().upper() for c in df.columns]
+    df.columns = [str(c).strip() for c in df.columns]
     return df
+
+
+
+def normalize_header_name(name):
+    text = str(name).strip().upper()
+    tr_map = str.maketrans({
+        "İ": "I", "I": "I", "Ş": "S", "Ğ": "G", "Ü": "U", "Ö": "O", "Ç": "C",
+        "ı": "I", "ş": "S", "ğ": "G", "ü": "U", "ö": "O", "ç": "C",
+    })
+    text = text.translate(tr_map)
+    text = re.sub(r"[^A-Z0-9]+", "", text)
+    return text
+
+
+def col_value(row, names, default=None):
+    wanted = {normalize_header_name(n) for n in names}
+    for col in row.index:
+        if normalize_header_name(col) in wanted:
+            value = row[col]
+            if pd.isna(value):
+                return default
+            return value
+    return default
+
+
+def df_filter_eq(df, col_names, expected):
+    wanted = {normalize_header_name(n) for n in col_names}
+    real_col = None
+    for col in df.columns:
+        if normalize_header_name(col) in wanted:
+            real_col = col
+            break
+    if real_col is None:
+        raise KeyError(f"Excel sütunu bulunamadı: {', '.join(col_names)}")
+    return df[df[real_col].astype(str).str.upper().str.strip() == str(expected).upper().strip()]
 
 
 def load_kazan_excel():
@@ -309,38 +346,41 @@ def load_kazan_excel():
 
 def get_discount(data, tip):
     df = data["iskontolar"]
-    row = df[df["TİP"].astype(str).str.upper().str.strip() == tip]
+    row = df_filter_eq(df, ["TİP", "TIP"], tip)
     if row.empty:
         return 0.0
-    return to_float(row.iloc[0]["İSKONTO (%)"])
+    return to_float(col_value(row.iloc[0], ["İSKONTO (%)", "ISKONTO (%)", "İskonto (%)"], 0))
 
 
 def get_equipment_multiplier(data, kazan_adedi):
     for _, row in data["carpan"].iterrows():
-        mn = int(to_float(row["MİN KAZAN"]))
-        mx = int(to_float(row["MAX KAZAN"]))
+        mn = int(to_float(col_value(row, ["MİN KAZAN", "MIN KAZAN"], 0)))
+        mx = int(to_float(col_value(row, ["MAX KAZAN"], 0)))
         if mn <= kazan_adedi <= mx:
-            return int(to_float(row["ÇARPAN"], 1))
+            return int(to_float(col_value(row, ["ÇARPAN", "CARPAN"], 1), 1))
     return 1
 
 
 def get_rule_products(data, rule_name):
     df = data["kurallar"]
-    rows = df[df["KURAL"].astype(str).str.upper().str.strip() == rule_name]
-    return [str(v).strip() for v in rows["ÜRÜN"].tolist()]
+    rows = df_filter_eq(df, ["KURAL"], rule_name)
+    urun_col = next((c for c in rows.columns if normalize_header_name(c) == normalize_header_name("ÜRÜN")), None)
+    if urun_col is None:
+        return []
+    return [str(v).strip() for v in rows[urun_col].tolist() if str(v).strip() and not pd.isna(v)]
 
 
 def get_accessory(data, key):
     df = data["aksesuarlar"]
-    row = df[df["ANAHTAR"].astype(str).str.upper().str.strip() == str(key).upper().strip()]
+    row = df_filter_eq(df, ["ANAHTAR"], key)
     if row.empty:
         raise ValueError(f"Aksesuar bulunamadı: {key}")
     row = row.iloc[0]
     return {
-        "code": str(row.get("ÜRÜN KODU", "")).strip() if not pd.isna(row.get("ÜRÜN KODU", "")) else str(key),
+        "code": str(col_value(row, ["ÜRÜN KODU", "URUN KODU"], str(key))).strip(),
         "short": str(key),
-        "name": str(row["ÜRÜN ADI"]).strip(),
-        "list_price": to_float(row["LİSTE FİYATI (€)"] if "LİSTE FİYATI (€)" in row else row.get("LISTE FIYATI (€)", 0)),
+        "name": str(col_value(row, ["ÜRÜN ADI", "URUN ADI"], "")).strip(),
+        "list_price": to_float(col_value(row, ["LİSTE FİYATI (€)", "LISTE FIYATI (€)", "ListeFiyatı (€)", "Liste Fiyatı (€)"], 0)),
     }
 
 
@@ -352,15 +392,15 @@ def get_pump(data, kw):
         wanted = "100/125"
     else:
         wanted = "150"
-    row = df[df["GRUP"].astype(str).str.strip() == wanted]
+    row = df_filter_eq(df, ["GRUP"], wanted)
     if row.empty:
         raise ValueError(f"Pompa seti bulunamadı: {wanted}")
     row = row.iloc[0]
     return {
-        "code": str(row.get("ÜRÜN KODU", "")).strip() if not pd.isna(row.get("ÜRÜN KODU", "")) else "",
+        "code": str(col_value(row, ["ÜRÜN KODU", "URUN KODU"], "")).strip(),
         "short": f"POMPA {wanted}",
-        "name": str(row["ÜRÜN ADI"]).strip(),
-        "list_price": to_float(row["LİSTE FİYATI (€)"] if "LİSTE FİYATI (€)" in row else row.get("LISTE FIYATI (€)", 0)),
+        "name": str(col_value(row, ["ÜRÜN ADI", "URUN ADI"], "")).strip(),
+        "list_price": to_float(col_value(row, ["LİSTE FİYATI (€)", "LISTE FIYATI (€)", "ListeFiyatı (€)", "Liste Fiyatı (€)"], 0)),
     }
 
 
@@ -380,7 +420,10 @@ def add_line(items, product, qty):
 def build_kazan_quote(kazan_adedi, kw, hot_water, has_boiler):
     data = load_kazan_excel()
     kazanlar = data["kazanlar"]
-    row = kazanlar[kazanlar["GÜÇ (KW)"].astype(int) == int(kw)]
+    guc_col = next((c for c in kazanlar.columns if normalize_header_name(c) in [normalize_header_name("GÜÇ (KW)"), normalize_header_name("GUC (KW)")]), None)
+    if guc_col is None:
+        raise KeyError("KAZANLAR sayfasında Güç (kW) sütunu bulunamadı.")
+    row = kazanlar[kazanlar[guc_col].astype(int) == int(kw)]
     if row.empty:
         raise ValueError(f"{kw} kW kazan Excel'de bulunamadı.")
     row = row.iloc[0]
@@ -393,10 +436,10 @@ def build_kazan_quote(kazan_adedi, kw, hot_water, has_boiler):
     warnings = []
 
     add_line(items, {
-        "code": str(row["ÜRÜN KODU"]).strip(),
-        "short": str(row.get("ÜRÜN KISALTMASI", "")).strip(),
-        "name": str(row["ÜRÜN ADI"]).strip(),
-        "list_price": to_float(row["LİSTEFİYATI (€)"]),
+        "code": str(col_value(row, ["ÜRÜN KODU", "URUN KODU"], "")).strip(),
+        "short": str(col_value(row, ["ÜRÜN KISALTMASI", "URUN KISALTMASI"], "")).strip(),
+        "name": str(col_value(row, ["ÜRÜN ADI", "URUN ADI"], "")).strip(),
+        "list_price": to_float(col_value(row, ["LİSTEFİYATI (€)", "LISTEFIYATI (€)", "LİSTE FİYATI (€)", "LISTE FIYATI (€)", "ListeFiyatı (€)", "Liste Fiyatı (€)"], 0)),
     }, kazan_adedi)
 
     # Pompa seti kazan adedi kadar eklenir, ekipman çarpanı uygulanmaz.
