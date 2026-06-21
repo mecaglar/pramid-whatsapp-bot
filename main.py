@@ -905,7 +905,7 @@ def generate_kazan_pdf(quote):
     return path
 
 
-def generate_radyator_pdf(quote):
+def generate_radiator_pdf(quote):
     regular_font, bold_font = setup_pdf_fonts()
 
     filename = f"pramid-radyator-teklifi-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
