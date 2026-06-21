@@ -1306,8 +1306,7 @@ def create_reply(sender: str, text: str):
     kombi_qty = 0
     
     # Eğer mesajdan radyatör bulunduysa kombi arama yapma
-    if not radiator_results:
-        # Kombi aramasını satır satır yapıyoruz.
+    # Kombi aramasını satır satır yapıyoruz.
 # Ama bir satır radyatör olarak algılandıysa o satırda kombi aramıyoruz.
 for line in lines:
     measure, _ = find_radiator_measure(line)
