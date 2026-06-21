@@ -22,6 +22,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.pdfgen import canvas
 import qrcode
+from openpyxl import load_workbook
 
 processed_message_ids = set()
 KAZAN_SESSIONS = {}
@@ -168,57 +169,155 @@ def product_label(product_type):
     return "Bilinmeyen"
 
 
-def load_discount_overrides():
+def find_excel_column(ws, possible_names):
+    wanted = {normalize_header_name(n) for n in possible_names}
+
+    for cell in ws[1]:
+        if normalize_header_name(cell.value) in wanted:
+            return cell.column
+
+    return None
+
+
+def read_kazan_discounts_from_excel():
     try:
-        if os.path.exists(DISCOUNT_OVERRIDE_FILE):
-            with open(DISCOUNT_OVERRIDE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        wb = load_workbook(KAZAN_FILE)
+        ws = wb["ISKONTOLAR"]
 
-            # Eski düz format desteği:
-            # {"NAKIT": 43, "KART": 38}
-            if "NAKIT" in data or "KART" in data:
-                return {
-                    "KAZAN": {
-                        "NAKIT": float(data.get("NAKIT", data.get("nakit", 0))),
-                        "KART": float(data.get("KART", data.get("kart", 0))),
-                    }
-                }
+        tip_col = find_excel_column(ws, ["TİP", "TIP"])
+        isk_col = find_excel_column(ws, ["İSKONTO (%)", "ISKONTO (%)", "İskonto (%)"])
 
-            clean = {}
-            for group in ["KAZAN", "RADYATOR"]:
-                group_data = data.get(group, {})
-                clean[group] = {}
-                if "NAKIT" in group_data:
-                    clean[group]["NAKIT"] = float(group_data["NAKIT"])
-                if "KART" in group_data:
-                    clean[group]["KART"] = float(group_data["KART"])
-            return clean
+        if not tip_col or not isk_col:
+            return {}
+
+        result = {}
+
+        for row in range(2, ws.max_row + 1):
+            tip = normalize_header_name(ws.cell(row=row, column=tip_col).value)
+            value = ws.cell(row=row, column=isk_col).value
+
+            if tip == "NAKIT":
+                result["NAKIT"] = to_float(value, 0)
+            elif tip == "KART":
+                result["KART"] = to_float(value, 0)
+
+        return result
 
     except Exception as e:
-        print("İskonto override okunamadı:", e, flush=True)
+        print("Kazan iskonto Excel okunamadı:", e, flush=True)
+        return {}
 
-    return {"KAZAN": {}, "RADYATOR": {}}
+
+def read_radyator_discounts_from_excel():
+    try:
+        wb = load_workbook(RADYATOR_FILE)
+        ws = wb.active
+
+        nakit_col = find_excel_column(ws, ["NAKİT İSKONTO", "NAKIT ISKONTO", "Nakit İskonto"])
+        kart_col = find_excel_column(ws, ["KART İSKONTO", "Kart İskonto"])
+
+        result = {}
+
+        # Radyatör listesinde tüm satırlara aynı iskonto yazılacağı için ilk dolu satırı okuyoruz.
+        for row in range(2, ws.max_row + 1):
+            if nakit_col and ws.cell(row=row, column=nakit_col).value not in [None, ""]:
+                result["NAKIT"] = to_float(ws.cell(row=row, column=nakit_col).value, 0)
+            if kart_col and ws.cell(row=row, column=kart_col).value not in [None, ""]:
+                result["KART"] = to_float(ws.cell(row=row, column=kart_col).value, 0)
+
+            if "NAKIT" in result or "KART" in result:
+                break
+
+        return result
+
+    except Exception as e:
+        print("Radyatör iskonto Excel okunamadı:", e, flush=True)
+        return {}
+
+
+def load_discount_overrides():
+    return {
+        "KAZAN": read_kazan_discounts_from_excel(),
+        "RADYATOR": read_radyator_discounts_from_excel(),
+    }
+
+
+def update_kazan_excel_discount(nakit=None, kart=None):
+    wb = load_workbook(KAZAN_FILE)
+    ws = wb["ISKONTOLAR"]
+
+    tip_col = find_excel_column(ws, ["TİP", "TIP"])
+    isk_col = find_excel_column(ws, ["İSKONTO (%)", "ISKONTO (%)", "İskonto (%)"])
+
+    if not tip_col or not isk_col:
+        raise ValueError("Kazan Excel ISKONTOLAR sayfasında TİP veya İSKONTO (%) sütunu bulunamadı.")
+
+    found_nakit = False
+    found_kart = False
+
+    for row in range(2, ws.max_row + 1):
+        tip = normalize_header_name(ws.cell(row=row, column=tip_col).value)
+
+        if tip == "NAKIT" and nakit is not None:
+            ws.cell(row=row, column=isk_col).value = float(nakit)
+            found_nakit = True
+
+        if tip == "KART" and kart is not None:
+            ws.cell(row=row, column=isk_col).value = float(kart)
+            found_kart = True
+
+    next_row = ws.max_row + 1
+
+    if nakit is not None and not found_nakit:
+        ws.cell(row=next_row, column=tip_col).value = "NAKIT"
+        ws.cell(row=next_row, column=isk_col).value = float(nakit)
+        next_row += 1
+
+    if kart is not None and not found_kart:
+        ws.cell(row=next_row, column=tip_col).value = "KART"
+        ws.cell(row=next_row, column=isk_col).value = float(kart)
+
+    wb.save(KAZAN_FILE)
+
+
+def update_radyator_excel_discount(nakit=None, kart=None):
+    wb = load_workbook(RADYATOR_FILE)
+    ws = wb.active
+
+    nakit_col = find_excel_column(ws, ["NAKİT İSKONTO", "NAKIT ISKONTO", "Nakit İskonto"])
+    kart_col = find_excel_column(ws, ["KART İSKONTO", "Kart İskonto"])
+
+    if nakit_col is None:
+        nakit_col = ws.max_column + 1
+        ws.cell(row=1, column=nakit_col).value = "NAKİT İSKONTO"
+
+    if kart_col is None:
+        kart_col = ws.max_column + 1
+        ws.cell(row=1, column=kart_col).value = "KART İSKONTO"
+
+    for row in range(2, ws.max_row + 1):
+        if nakit is not None:
+            ws.cell(row=row, column=nakit_col).value = float(nakit)
+
+        if kart is not None:
+            ws.cell(row=row, column=kart_col).value = float(kart)
+
+    wb.save(RADYATOR_FILE)
 
 
 def save_discount_overrides(product_type, nakit=None, kart=None):
-    current = load_discount_overrides()
+    if product_type in ["KAZAN", "ALL"]:
+        update_kazan_excel_discount(nakit=nakit, kart=kart)
 
-    target_groups = ["KAZAN", "RADYATOR"] if product_type == "ALL" else [product_type]
+    if product_type in ["RADYATOR", "ALL"]:
+        update_radyator_excel_discount(nakit=nakit, kart=kart)
 
-    for group in target_groups:
-        current.setdefault(group, {})
-        if nakit is not None:
-            current[group]["NAKIT"] = float(nakit)
-        if kart is not None:
-            current[group]["KART"] = float(kart)
-
-    with open(DISCOUNT_OVERRIDE_FILE, "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
-
-    return current
+    return load_discount_overrides()
 
 
 def get_runtime_discount(tip, product_type="KAZAN"):
+    # İskontolar artık Excel'e kalıcı yazılıyor.
+    # Bu fonksiyon yine de mevcut kod yapısını bozmamak için Excel'den okur.
     data = load_discount_overrides()
     group = data.get(product_type, {})
     key = normalize_header_name(tip)
@@ -265,6 +364,7 @@ def admin_discount_help():
         data = current.get(group, {})
         nakit = data.get("NAKIT")
         kart = data.get("KART")
+
         return (
             f"{product_label(group)}\n"
             f"  Nakit: %{nakit:g}" if nakit is not None else f"{product_label(group)}\n  Nakit: Excel değeri"
@@ -321,12 +421,15 @@ def finish_discount_update(product_type, nakit, kart):
     if kart is not None and not (0 <= float(kart) <= 100):
         return "Kart iskonto 0 ile 100 arasında olmalıdır."
 
-    updated = save_discount_overrides(product_type, nakit=nakit, kart=kart)
+    try:
+        updated = save_discount_overrides(product_type, nakit=nakit, kart=kart)
+    except Exception as e:
+        return f"İskonto Excel'e yazılırken hata oluştu: {e}"
 
     target_groups = ["KAZAN", "RADYATOR"] if product_type == "ALL" else [product_type]
 
     lines = [
-        "İskonto güncellendi.",
+        "İskonto güncellendi ve Excel'e kaydedildi.",
         "",
         f"Ürün grubu: {product_label(product_type)}",
         "",
@@ -340,7 +443,7 @@ def finish_discount_update(product_type, nakit, kart):
 
     lines.extend([
         "",
-        "Not: Bu değerler bot çalıştığı sürece geçerlidir. Render yeniden deploy/restart olursa Excel değerleri tekrar esas alınabilir."
+        "Yeni teklifler bu Excel değerleriyle hesaplanacaktır."
     ])
 
     return "\n".join(lines)
@@ -395,7 +498,6 @@ def handle_admin_discount_command(sender, text):
             product_type = maybe
             break
 
-    # Sadece "pramid iskonto" yazıldıysa adım adım sor
     nakit, kart = parse_discount_values(text)
 
     if not product_type:
