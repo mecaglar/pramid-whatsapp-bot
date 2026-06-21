@@ -1271,123 +1271,97 @@ def create_reply(sender: str, text: str):
         return start_kazan_flow(sender, text)
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    radiator_results = []
-    kombi_results = []
+
+    radiator_items = []
+    kombi_items = []
     total_nakit = 0
     total_kart = 0
     not_found = []
 
     try:
         radiator_products = load_radiators()
+
         for line in lines:
             measure, qty = find_radiator_measure(line)
+
             if not measure:
                 continue
+
             product = next((p for p in radiator_products if p["olcu"] == measure), None)
+
             if not product:
                 not_found.append(measure)
                 continue
+
             nakit_total = product["nakit"] * qty
             kart_total = product["kart"] * qty
+
             total_nakit += nakit_total
             total_kart += kart_total
-            radiator_results.append(
-                f"Radyatör {measure}\n"
-                f"Adet: {qty}\n"
-                f"Nakit Birim: {money_tl(product['nakit'])} KDV Dahil\n"
-                f"Kart Birim: {money_tl(product['kart'])} KDV Dahil\n"
-                f"Nakit Toplam: {money_tl(nakit_total)} KDV Dahil\n"
-                f"Kart Toplam: {money_tl(kart_total)} KDV Dahil"
-            )
-    except Exception as e:
-        print("Radyatör Excel okunamadı:", e, flush=True)
 
-    kombi = None
-    kombi_qty = 0
-    
-    # Eğer mesajdan radyatör bulunduysa kombi arama yapma
-    # Kombi aramasını satır satır yapıyoruz.
-# Ama bir satır radyatör olarak algılandıysa o satırda kombi aramıyoruz.
-for line in lines:
-    measure, _ = find_radiator_measure(line)
-
-    if measure:
-        continue
-
-    kombi, kombi_qty = find_kombi(line)
-
-    if kombi:
-        kombi_nakit_total = kombi["nakit"] * kombi_qty
-        kombi_kart_total = kombi["kart"] * kombi_qty
-
-        total_nakit += kombi_nakit_total
-        total_kart += kombi_kart_total
-
-        kombi_results.append(
-            f"{kombi['name']}\n"
-            f"Adet: {kombi_qty}\n"
-            f"Nakit Birim: {money_tl(kombi['nakit'])} KDV Dahil\n"
-            f"Kart Birim: {money_tl(kombi['kart'])} KDV Dahil\n"
-            f"Nakit Toplam: {money_tl(kombi_nakit_total)} KDV Dahil\n"
-            f"Kart Toplam: {money_tl(kombi_kart_total)} KDV Dahil"
-        )
-
-    if radiator_results or kombi_results:
-        pdf_items = []
-
-        for line in lines:
-            measure, qty = find_radiator_measure(line)
-            if not measure:
-                continue
-            product = next((p for p in radiator_products if p["olcu"] == measure), None)
-            if not product:
-                continue
-            pdf_items.append({
-                "name": f"E.C.A. Panel Radyatör {measure}",
+            radiator_items.append({
+                "code": measure,
+                "name": f"Panel Radyatör {measure}",
                 "qty": qty,
                 "nakit_unit": product["nakit"],
                 "kart_unit": product["kart"],
-                "nakit_total": product["nakit"] * qty,
-                "kart_total": product["kart"] * qty,
+                "nakit_total": nakit_total,
+                "kart_total": kart_total,
             })
 
-        for kombi_item_text in kombi_results:
-            if kombi:
-                pdf_items.append({
-                    "name": kombi["name"],
-                    "qty": kombi_qty,
-                    "nakit_unit": kombi["nakit"],
-                    "kart_unit": kombi["kart"],
-                    "nakit_total": kombi["nakit"] * kombi_qty,
-                    "kart_total": kombi["kart"] * kombi_qty,
-                })
+    except Exception as e:
+        print("Radyatör Excel okunamadı:", e, flush=True)
 
+    for line in lines:
+        measure, _ = find_radiator_measure(line)
+
+        if measure:
+            continue
+
+        kombi, kombi_qty = find_kombi(line)
+
+        if kombi:
+            kombi_nakit_total = kombi["nakit"] * kombi_qty
+            kombi_kart_total = kombi["kart"] * kombi_qty
+
+            total_nakit += kombi_nakit_total
+            total_kart += kombi_kart_total
+
+            kombi_items.append({
+                "code": "",
+                "name": kombi["name"],
+                "qty": kombi_qty,
+                "nakit_unit": kombi["nakit"],
+                "kart_unit": kombi["kart"],
+                "nakit_total": kombi_nakit_total,
+                "kart_total": kombi_kart_total,
+            })
+
+    if radiator_items or kombi_items:
         quote = {
-            "title": "Radyatör / Kombi Teklifi" if kombi_results else "Radyatör Teklifi",
-            "items": pdf_items,
+            "type": "RADYATÖR / KOMBİ",
+            "items": radiator_items + kombi_items,
             "total_nakit": total_nakit,
             "total_kart": total_kart,
             "not_found": not_found,
         }
 
-        pdf_path = generate_radyator_pdf(quote)
+        pdf_path = generate_radiator_pdf(quote)
 
-        reply = (
+        caption = (
             "Fiyat teklifiniz hazırlanmıştır.\n\n"
             f"Nakit Toplam: {money_tl(total_nakit)} KDV Dahil\n"
             f"Kart Toplam: {money_tl(total_kart)} KDV Dahil"
         )
 
         if not_found:
-            reply += "\n\nBulunamayan ölçüler:\n" + "\n".join(not_found)
+            caption += "\n\nBulunamayan ölçüler:\n" + "\n".join(not_found)
 
         return {
-            "text": reply,
             "document_path": pdf_path,
             "filename": os.path.basename(pdf_path),
-            "caption": reply,
+            "caption": caption,
         }
-
 
     if "merhaba" in text_lower or "selam" in text_lower or text_lower == "sa":
         return (
@@ -1407,8 +1381,6 @@ for line in lines:
         "Kazan örnek:\n"
         "2 adet 125 kW kazan"
     )
-
-
 # -------------------------
 # WhatsApp gönderimleri
 # -------------------------
