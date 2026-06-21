@@ -1307,13 +1307,23 @@ def create_reply(sender: str, text: str):
     
     # Eğer mesajdan radyatör bulunduysa kombi arama yapma
     if not radiator_results:
-        kombi, kombi_qty = find_kombi(text)
-    
+        # Kombi aramasını satır satır yapıyoruz.
+# Ama bir satır radyatör olarak algılandıysa o satırda kombi aramıyoruz.
+for line in lines:
+    measure, _ = find_radiator_measure(line)
+
+    if measure:
+        continue
+
+    kombi, kombi_qty = find_kombi(line)
+
     if kombi:
         kombi_nakit_total = kombi["nakit"] * kombi_qty
         kombi_kart_total = kombi["kart"] * kombi_qty
+
         total_nakit += kombi_nakit_total
         total_kart += kombi_kart_total
+
         kombi_results.append(
             f"{kombi['name']}\n"
             f"Adet: {kombi_qty}\n"
