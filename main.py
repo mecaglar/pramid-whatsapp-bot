@@ -1244,7 +1244,6 @@ def continue_kazan_flow(sender, text):
             pdf_path = generate_kazan_pdf(quote)
             KAZAN_SESSIONS.pop(sender, None)
             return {
-                "text": short_kazan_text(quote),
                 "document_path": pdf_path,
                 "filename": os.path.basename(pdf_path),
                 "caption": short_kazan_text(quote),
@@ -1303,7 +1302,13 @@ def create_reply(sender: str, text: str):
     except Exception as e:
         print("Radyatör Excel okunamadı:", e, flush=True)
 
-    kombi, kombi_qty = find_kombi(text)
+    kombi = None
+    kombi_qty = 0
+    
+    # Eğer mesajdan radyatör bulunduysa kombi arama yapma
+    if not radiator_results:
+        kombi, kombi_qty = find_kombi(text)
+    
     if kombi:
         kombi_nakit_total = kombi["nakit"] * kombi_qty
         kombi_kart_total = kombi["kart"] * kombi_qty
