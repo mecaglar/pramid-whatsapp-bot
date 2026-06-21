@@ -266,10 +266,10 @@ def admin_discount_help():
         nakit = data.get("NAKIT")
         kart = data.get("KART")
         return (
-            f"{product_label(group)}\\n"
-            f"  Nakit: %{nakit:g}" if nakit is not None else f"{product_label(group)}\\n  Nakit: Excel değeri"
+            f"{product_label(group)}\n"
+            f"  Nakit: %{nakit:g}" if nakit is not None else f"{product_label(group)}\n  Nakit: Excel değeri"
         ) + (
-            f"\\n  Kart: %{kart:g}" if kart is not None else "\\n  Kart: Excel değeri"
+            f"\n  Kart: %{kart:g}" if kart is not None else "\n  Kart: Excel değeri"
         )
 
     lines = [
@@ -288,25 +288,25 @@ def admin_discount_help():
         "",
         group_line("RADYATOR"),
     ]
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def ask_discount_product():
     return (
-        "Hangi ürün grubunun iskontosunu değiştireyim?\\n\\n"
-        "1 - Kazan\\n"
-        "2 - Radyatör\\n"
-        "3 - Hepsi\\n\\n"
+        "Hangi ürün grubunun iskontosunu değiştireyim?\n\n"
+        "1 - Kazan\n"
+        "2 - Radyatör\n"
+        "3 - Hepsi\n\n"
         "İptal için: iptal"
     )
 
 
 def ask_discount_values(product_type):
     return (
-        f"{product_label(product_type)} için yeni iskonto oranlarını yazınız.\\n\\n"
-        "Örnek:\\n"
-        "43 38\\n\\n"
-        "veya:\\n"
+        f"{product_label(product_type)} için yeni iskonto oranlarını yazınız.\n\n"
+        "Örnek:\n"
+        "43 38\n\n"
+        "veya:\n"
         "nakit 43 kart 38"
     )
 
@@ -343,7 +343,7 @@ def finish_discount_update(product_type, nakit, kart):
         "Not: Bu değerler bot çalıştığı sürece geçerlidir. Render yeniden deploy/restart olursa Excel değerleri tekrar esas alınabilir."
     ])
 
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def handle_admin_discount_command(sender, text):
