@@ -12,13 +12,15 @@ from fastapi.responses import PlainTextResponse
 
 # PDF
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfgen import canvas
+import qrcode
 
 processed_message_ids = set()
 KAZAN_SESSIONS = {}
@@ -477,8 +479,19 @@ def build_kazan_quote(kazan_adedi, kw, hot_water, has_boiler):
         item["nakit_total_kdv"] = item["nakit_unit_kdv"] * item["qty"]
         item["kart_total_kdv"] = item["kart_unit_kdv"] * item["qty"]
 
-    total_nakit = sum(i["nakit_total_kdv"] for i in items)
-    total_kart = sum(i["kart_total_kdv"] for i in items)
+    total_list = sum(i["list_total"] for i in items)
+
+    total_nakit_haric = sum(
+        i["list_unit"] * (1 - nakit_disc / 100) * i["qty"]
+        for i in items
+    )
+    total_kart_haric = sum(
+        i["list_unit"] * (1 - kart_disc / 100) * i["qty"]
+        for i in items
+    )
+
+    total_nakit = total_nakit_haric * (1 + VAT_RATE)
+    total_kart = total_kart_haric * (1 + VAT_RATE)
 
     return {
         "kw": kw,
@@ -489,6 +502,9 @@ def build_kazan_quote(kazan_adedi, kw, hot_water, has_boiler):
         "items": items,
         "nakit_disc": nakit_disc,
         "kart_disc": kart_disc,
+        "total_list": total_list,
+        "total_nakit_haric": total_nakit_haric,
+        "total_kart_haric": total_kart_haric,
         "total_nakit": total_nakit,
         "total_kart": total_kart,
         "warnings": warnings,
@@ -520,8 +536,83 @@ def setup_pdf_fonts():
     return "Helvetica", "Helvetica-Bold"
 
 
+
+class NumberedCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+        self.setTitle("PRAMID İNŞAAT FİYAT TEKLİFİ")
+        self.setAuthor("PRAMID İNŞAAT")
+        self.setSubject("Fiyat Teklifi")
+        self.setCreator("PRAMID WhatsApp Fiyatlandırma Botu")
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total_pages = len(self._saved_page_states)
+
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.setFont("Helvetica", 7)
+            self.setFillColor(colors.HexColor("#6B7280"))
+            self.drawCentredString(105 * mm, 8 * mm, f"{self._pageNumber}/{total_pages}")
+            super().showPage()
+
+        super().save()
+
+
+def _safe_code(item):
+    code = str(item.get("code", "")).strip()
+    if code and code.lower() != "nan":
+        return code
+    return str(item.get("short", "")).strip() or "-"
+
+
+def _draw_pdf_background(c, document, teklif_no, regular_font, navy, orange, text_muted, qr_label="QR teklif doğrulama"):
+    c.saveState()
+
+    # Üst kurumsal bant
+    c.setFillColor(navy)
+    c.rect(0, 287 * mm, 210 * mm, 10 * mm, fill=1, stroke=0)
+
+    c.setFillColor(orange)
+    c.rect(0, 285.8 * mm, 210 * mm, 1.2 * mm, fill=1, stroke=0)
+
+    # QR kod
+    try:
+        qr_text = f"PRAMID Teklif No: {teklif_no}"
+        qr_img = qrcode.make(qr_text)
+        qr_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        qr_file.close()
+        qr_img.save(qr_file.name)
+        c.drawImage(
+            qr_file.name,
+            178 * mm,
+            17 * mm,
+            width=20 * mm,
+            height=20 * mm,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+        try:
+            os.remove(qr_file.name)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    c.setFont(regular_font, 6.5)
+    c.setFillColor(text_muted)
+    c.drawRightString(198 * mm, 14 * mm, qr_label)
+
+    c.restoreState()
+
+
 def generate_kazan_pdf(quote):
     regular_font, bold_font = setup_pdf_fonts()
+
     filename = f"pramid-kazan-teklifi-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
     path = os.path.join(tempfile.gettempdir(), filename)
 
@@ -530,80 +621,573 @@ def generate_kazan_pdf(quote):
         pagesize=A4,
         rightMargin=12 * mm,
         leftMargin=12 * mm,
-        topMargin=12 * mm,
-        bottomMargin=12 * mm,
+        topMargin=14 * mm,
+        bottomMargin=16 * mm,
     )
 
+    navy = colors.HexColor("#0F2742")
+    orange = colors.HexColor("#F97316")
+    light_bg = colors.HexColor("#F8FAFC")
+    mid_bg = colors.HexColor("#EEF2F7")
+    border = colors.HexColor("#D8DEE8")
+    text_dark = colors.HexColor("#111827")
+    text_muted = colors.HexColor("#6B7280")
+    white = colors.white
+
     styles = getSampleStyleSheet()
-    title = ParagraphStyle("Title", parent=styles["Title"], fontName=bold_font, fontSize=16, alignment=TA_CENTER, spaceAfter=8)
-    normal = ParagraphStyle("NormalTR", parent=styles["Normal"], fontName=regular_font, fontSize=8.5, leading=11)
-    bold = ParagraphStyle("BoldTR", parent=normal, fontName=bold_font)
-    right = ParagraphStyle("RightTR", parent=normal, alignment=TA_RIGHT)
+
+    title_style = ParagraphStyle(
+        "PramidTitle",
+        parent=styles["Title"],
+        fontName=bold_font,
+        fontSize=20,
+        leading=24,
+        textColor=navy,
+        alignment=TA_RIGHT,
+        spaceAfter=2,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "PramidSubtitle",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=12,
+        leading=15,
+        textColor=orange,
+        alignment=TA_RIGHT,
+    )
+
+    normal = ParagraphStyle(
+        "NormalTR",
+        parent=styles["Normal"],
+        fontName=regular_font,
+        fontSize=8.5,
+        leading=11,
+        textColor=text_dark,
+    )
+
+    small = ParagraphStyle(
+        "SmallTR",
+        parent=normal,
+        fontSize=7.5,
+        leading=10,
+        textColor=text_muted,
+    )
+
+    bold = ParagraphStyle(
+        "BoldTR",
+        parent=normal,
+        fontName=bold_font,
+        textColor=text_dark,
+    )
+
+    table_head = ParagraphStyle(
+        "TableHead",
+        parent=normal,
+        fontName=bold_font,
+        fontSize=8,
+        leading=10,
+        textColor=white,
+        alignment=TA_CENTER,
+    )
+
+    cell = ParagraphStyle(
+        "Cell",
+        parent=normal,
+        fontSize=7.8,
+        leading=10,
+    )
+
+    cell_right = ParagraphStyle(
+        "CellRight",
+        parent=cell,
+        alignment=TA_RIGHT,
+    )
+
+    summary_label = ParagraphStyle(
+        "SummaryLabel",
+        parent=normal,
+        fontName=bold_font,
+        fontSize=8,
+        leading=10,
+        textColor=text_muted,
+    )
+
+    summary_value = ParagraphStyle(
+        "SummaryValue",
+        parent=normal,
+        fontName=bold_font,
+        fontSize=12,
+        leading=15,
+        textColor=navy,
+        alignment=TA_RIGHT,
+    )
 
     story = []
-    story.append(Paragraph("PRAMID İNŞAAT FİYAT TEKLİFİ", title))
-    story.append(Paragraph(f"Tarih: {datetime.now().strftime('%d.%m.%Y %H:%M')}", right))
-    story.append(Spacer(1, 5 * mm))
-    story.append(Paragraph(f"E.C.A. Felis Kazan Teklifi - {quote['kazan_adedi']} adet {quote['kw']} kW", bold))
-    story.append(Paragraph(f"Kullanım: {'Isıtma + Sıcak su' if quote['hot_water'] else 'Isıtma'} | Boyler: {'Var' if quote['has_boiler'] else 'Yok'}", normal))
-    story.append(Spacer(1, 4 * mm))
 
-    data = [[
-        Paragraph("Kod", bold), Paragraph("Ürün", bold), Paragraph("Adet", bold),
-        Paragraph("Liste Birim", bold), Paragraph("Nakit Toplam", bold), Paragraph("Kart Toplam", bold),
-    ]]
-    for item in quote["items"]:
-        code = item["code"] if item["code"] and item["code"] != "nan" else item["short"]
-        data.append([
-            Paragraph(str(code), normal),
-            Paragraph(item["name"], normal),
-            Paragraph(str(item["qty"]), normal),
-            Paragraph(money_eur(item["list_unit"]), normal),
-            Paragraph(money_eur(item["nakit_total_kdv"]), normal),
-            Paragraph(money_eur(item["kart_total_kdv"]), normal),
-        ])
+    now = datetime.now()
+    teklif_no = f"PRM-KZN-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}"
+    tarih = now.strftime("%d.%m.%Y")
 
-    table = Table(data, colWidths=[24*mm, 70*mm, 14*mm, 25*mm, 28*mm, 28*mm], repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), bold_font),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D1D5DB")),
+    header = Table(
+        [[
+            Paragraph(
+                "<b>PRAMID</b><br/><font size='8'>İNŞAAT</font>",
+                ParagraphStyle(
+                    "LogoText",
+                    parent=normal,
+                    fontName=bold_font,
+                    fontSize=18,
+                    leading=18,
+                    textColor=navy,
+                )
+            ),
+            [
+                Paragraph("PRAMID İNŞAAT", title_style),
+                Paragraph("FİYAT TEKLİFİ", subtitle_style),
+                Paragraph(f"Teklif No: {teklif_no}<br/>Tarih: {tarih}", small),
+            ],
+        ]],
+        colWidths=[65 * mm, 120 * mm],
+    )
+
+    header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9FAFB")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
-    story.append(table)
+
+    story.append(header)
+
+    story.append(Table(
+        [[""]],
+        colWidths=[185 * mm],
+        rowHeights=[2.2 * mm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), orange),
+        ])
+    ))
+
+    story.append(Spacer(1, 5 * mm))
+
+    customer_box = Table(
+        [[
+            Paragraph(
+                "<b>TEKLİF BİLGİLERİ</b><br/>"
+                f"E.C.A. Felis Kazan Teklifi<br/>"
+                f"{quote['kazan_adedi']} adet {quote['kw']} kW<br/>"
+                f"Kullanım: {'Isıtma + Sıcak su' if quote['hot_water'] else 'Isıtma'}<br/>"
+                f"Boyler: {'Var' if quote['has_boiler'] else 'Yok'}",
+                normal
+            ),
+            Paragraph(
+                "<b>FİYAT DETAYI</b><br/>"
+                f"KDV Oranı: %{int(VAT_RATE * 100)}<br/>"
+                f"Nakit İskonto: %{quote['nakit_disc']:.0f}<br/>"
+                f"Kart İskonto: %{quote['kart_disc']:.0f}<br/>"
+                "Para Birimi: Euro (€)",
+                normal
+            )
+        ]],
+        colWidths=[115 * mm, 70 * mm],
+    )
+
+    customer_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), light_bg),
+        ("BOX", (0, 0), (-1, -1), 0.6, border),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+
+    story.append(customer_box)
     story.append(Spacer(1, 6 * mm))
 
-    totals = Table([
-        [Paragraph("Nakit Toplam KDV Dahil", bold), Paragraph(money_eur(quote["total_nakit"]), bold)],
-        [Paragraph("Kart Toplam KDV Dahil", bold), Paragraph(money_eur(quote["total_kart"]), bold)],
-    ], colWidths=[55*mm, 40*mm], hAlign="RIGHT")
-    totals.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F3F4F6")),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D1D5DB")),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    data = [[
+        Paragraph("Kod", table_head),
+        Paragraph("Ürün Adı", table_head),
+        Paragraph("Adet", table_head),
+        Paragraph("Birim Fiyat (€)", table_head),
+        Paragraph("Toplam Fiyat (€)", table_head),
+    ]]
+
+    for item in quote["items"]:
+        data.append([
+            Paragraph(_safe_code(item), cell),
+            Paragraph(str(item["name"]), cell),
+            Paragraph(str(item["qty"]), cell_right),
+            Paragraph(money_eur(item["list_unit"]), cell_right),
+            Paragraph(money_eur(item["list_total"]), cell_right),
+        ])
+
+    table = Table(
+        data,
+        colWidths=[27 * mm, 83 * mm, 15 * mm, 30 * mm, 30 * mm],
+        repeatRows=1,
+    )
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), navy),
+        ("TEXTCOLOR", (0, 0), (-1, 0), white),
+        ("FONTNAME", (0, 0), (-1, 0), bold_font),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, light_bg]),
+        ("BOX", (0, 0), (-1, -1), 0.6, border),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.2, orange),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
-    story.append(totals)
+
+    story.append(table)
+    story.append(Spacer(1, 7 * mm))
+
+    summary_data = [
+        [Paragraph("Nakit Toplam", summary_label), Paragraph(money_eur(quote["total_nakit_haric"]), summary_value)],
+        [Paragraph("Nakit KDV Dahil Toplam", summary_label), Paragraph(money_eur(quote["total_nakit"]), summary_value)],
+        [Paragraph("Kart Toplam", summary_label), Paragraph(money_eur(quote["total_kart_haric"]), summary_value)],
+        [Paragraph("Kart KDV Dahil Toplam", summary_label), Paragraph(money_eur(quote["total_kart"]), summary_value)],
+    ]
+
+    summary_table = Table(summary_data, colWidths=[65 * mm, 45 * mm], hAlign="RIGHT")
+
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), mid_bg),
+        ("BOX", (0, 0), (-1, -1), 0.8, navy),
+        ("LINEBELOW", (0, 0), (-1, 2), 0.4, border),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+
+    story.append(summary_table)
 
     if quote["warnings"]:
         story.append(Spacer(1, 5 * mm))
-        story.append(Paragraph("Not: " + " ".join(quote["warnings"]), normal))
+        story.append(Paragraph("Not: " + " ".join(quote["warnings"]), small))
 
-    story.append(Spacer(1, 5 * mm))
-    story.append(Paragraph("Fiyatlar teklif amaçlıdır. Nihai stok ve fiyat teyidi için PRAMID İnşaat ile görüşünüz.", normal))
+    story.append(Spacer(1, 6 * mm))
 
-    def add_page_number(canvas, document):
-        canvas.saveState()
-        canvas.setFont(regular_font, 7)
-        canvas.drawRightString(200 * mm, 8 * mm, f"Sayfa {document.page}")
-        canvas.restoreState()
+    footer_text = (
+        "Bu teklif Euro (€) bazlıdır. KDV oranı %20 olarak hesaplanmıştır. "
+        "Teklif geçerlilik süresi 7 gündür. Nihai stok ve fiyat teyidi için PRAMID İnşaat ile görüşünüz.<br/>"
+        "PRAMID İNŞAAT | WhatsApp Fiyatlandırma Sistemi"
+    )
 
-    doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
+    story.append(Paragraph(footer_text, small))
+
+    def page_canvas(c, document):
+        _draw_pdf_background(
+            c,
+            document,
+            teklif_no,
+            regular_font,
+            navy,
+            orange,
+            text_muted,
+            "QR teklif doğrulama / arşiv kodu",
+        )
+
+    doc.build(
+        story,
+        onFirstPage=page_canvas,
+        onLaterPages=page_canvas,
+        canvasmaker=NumberedCanvas,
+    )
+
     return path
 
+
+def generate_radyator_pdf(quote):
+    regular_font, bold_font = setup_pdf_fonts()
+
+    filename = f"pramid-radyator-teklifi-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+    path = os.path.join(tempfile.gettempdir(), filename)
+
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=A4,
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=14 * mm,
+        bottomMargin=16 * mm,
+    )
+
+    navy = colors.HexColor("#0F2742")
+    orange = colors.HexColor("#F97316")
+    light_bg = colors.HexColor("#F8FAFC")
+    mid_bg = colors.HexColor("#EEF2F7")
+    border = colors.HexColor("#D8DEE8")
+    text_dark = colors.HexColor("#111827")
+    text_muted = colors.HexColor("#6B7280")
+    white = colors.white
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "RadTitle",
+        parent=styles["Title"],
+        fontName=bold_font,
+        fontSize=20,
+        leading=24,
+        textColor=navy,
+        alignment=TA_RIGHT,
+        spaceAfter=2,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "RadSubtitle",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=12,
+        leading=15,
+        textColor=orange,
+        alignment=TA_RIGHT,
+    )
+
+    normal = ParagraphStyle(
+        "RadNormal",
+        parent=styles["Normal"],
+        fontName=regular_font,
+        fontSize=8.5,
+        leading=11,
+        textColor=text_dark,
+    )
+
+    small = ParagraphStyle(
+        "RadSmall",
+        parent=normal,
+        fontSize=7.5,
+        leading=10,
+        textColor=text_muted,
+    )
+
+    table_head = ParagraphStyle(
+        "RadTableHead",
+        parent=normal,
+        fontName=bold_font,
+        fontSize=8,
+        leading=10,
+        textColor=white,
+        alignment=TA_CENTER,
+    )
+
+    cell = ParagraphStyle(
+        "RadCell",
+        parent=normal,
+        fontSize=7.8,
+        leading=10,
+    )
+
+    cell_right = ParagraphStyle(
+        "RadCellRight",
+        parent=cell,
+        alignment=TA_RIGHT,
+    )
+
+    summary_label = ParagraphStyle(
+        "RadSummaryLabel",
+        parent=normal,
+        fontName=bold_font,
+        fontSize=8,
+        leading=10,
+        textColor=text_muted,
+    )
+
+    summary_value = ParagraphStyle(
+        "RadSummaryValue",
+        parent=normal,
+        fontName=bold_font,
+        fontSize=12,
+        leading=15,
+        textColor=navy,
+        alignment=TA_RIGHT,
+    )
+
+    story = []
+
+    now = datetime.now()
+    teklif_no = f"PRM-RAD-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}"
+    tarih = now.strftime("%d.%m.%Y")
+
+    header = Table(
+        [[
+            Paragraph(
+                "<b>PRAMID</b><br/><font size='8'>İNŞAAT</font>",
+                ParagraphStyle(
+                    "RadLogoText",
+                    parent=normal,
+                    fontName=bold_font,
+                    fontSize=18,
+                    leading=18,
+                    textColor=navy,
+                )
+            ),
+            [
+                Paragraph("PRAMID İNŞAAT", title_style),
+                Paragraph("FİYAT TEKLİFİ", subtitle_style),
+                Paragraph(f"Teklif No: {teklif_no}<br/>Tarih: {tarih}", small),
+            ],
+        ]],
+        colWidths=[65 * mm, 120 * mm],
+    )
+
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+
+    story.append(header)
+
+    story.append(Table(
+        [[""]],
+        colWidths=[185 * mm],
+        rowHeights=[2.2 * mm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), orange),
+        ])
+    ))
+
+    story.append(Spacer(1, 5 * mm))
+
+    info_box = Table(
+        [[
+            Paragraph(
+                "<b>TEKLİF BİLGİLERİ</b><br/>"
+                f"Ürün Grubu: {quote.get('title', 'Radyatör Teklifi')}<br/>"
+                f"Kalem Sayısı: {len(quote.get('items', []))}<br/>"
+                "Para Birimi: TL",
+                normal
+            ),
+            Paragraph(
+                "<b>FİYAT DETAYI</b><br/>"
+                "Fiyatlar KDV dahil hesaplanmıştır.<br/>"
+                "Nakit ve kart toplamları ayrı gösterilmiştir.<br/>"
+                "Teklif geçerlilik süresi: 7 gün",
+                normal
+            )
+        ]],
+        colWidths=[115 * mm, 70 * mm],
+    )
+
+    info_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), light_bg),
+        ("BOX", (0, 0), (-1, -1), 0.6, border),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+
+    story.append(info_box)
+    story.append(Spacer(1, 6 * mm))
+
+    data = [[
+        Paragraph("Ürün", table_head),
+        Paragraph("Adet", table_head),
+        Paragraph("Nakit Birim", table_head),
+        Paragraph("Kart Birim", table_head),
+        Paragraph("Nakit Toplam", table_head),
+        Paragraph("Kart Toplam", table_head),
+    ]]
+
+    for item in quote.get("items", []):
+        data.append([
+            Paragraph(str(item.get("name", "")), cell),
+            Paragraph(str(item.get("qty", "")), cell_right),
+            Paragraph(money_tl(item.get("nakit_unit", 0)), cell_right),
+            Paragraph(money_tl(item.get("kart_unit", 0)), cell_right),
+            Paragraph(money_tl(item.get("nakit_total", 0)), cell_right),
+            Paragraph(money_tl(item.get("kart_total", 0)), cell_right),
+        ])
+
+    table = Table(
+        data,
+        colWidths=[63 * mm, 14 * mm, 27 * mm, 27 * mm, 27 * mm, 27 * mm],
+        repeatRows=1,
+    )
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), navy),
+        ("TEXTCOLOR", (0, 0), (-1, 0), white),
+        ("FONTNAME", (0, 0), (-1, 0), bold_font),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, light_bg]),
+        ("BOX", (0, 0), (-1, -1), 0.6, border),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.2, orange),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+
+    story.append(table)
+    story.append(Spacer(1, 7 * mm))
+
+    summary_data = [
+        [Paragraph("Nakit KDV Dahil Toplam", summary_label), Paragraph(money_tl(quote.get("total_nakit", 0)), summary_value)],
+        [Paragraph("Kart KDV Dahil Toplam", summary_label), Paragraph(money_tl(quote.get("total_kart", 0)), summary_value)],
+    ]
+
+    summary_table = Table(summary_data, colWidths=[65 * mm, 45 * mm], hAlign="RIGHT")
+
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), mid_bg),
+        ("BOX", (0, 0), (-1, -1), 0.8, navy),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.4, border),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+
+    story.append(summary_table)
+
+    not_found = quote.get("not_found", [])
+    if not_found:
+        story.append(Spacer(1, 5 * mm))
+        story.append(Paragraph("Bulunamayan ölçüler: " + ", ".join(not_found), small))
+
+    story.append(Spacer(1, 6 * mm))
+    story.append(Paragraph(
+        "Bu teklif TL bazlıdır ve KDV dahil fiyatlar üzerinden hazırlanmıştır. "
+        "Teklif geçerlilik süresi 7 gündür. Nihai stok ve fiyat teyidi için PRAMID İnşaat ile görüşünüz.<br/>"
+        "PRAMID İNŞAAT | WhatsApp Fiyatlandırma Sistemi",
+        small
+    ))
+
+    def page_canvas(c, document):
+        _draw_pdf_background(
+            c,
+            document,
+            teklif_no,
+            regular_font,
+            navy,
+            orange,
+            text_muted,
+            "QR teklif doğrulama / arşiv kodu",
+        )
+
+    doc.build(
+        story,
+        onFirstPage=page_canvas,
+        onLaterPages=page_canvas,
+        canvasmaker=NumberedCanvas,
+    )
+
+    return path
 
 def start_kazan_flow(sender, text):
     qty, kw = parse_kazan_request(text)
@@ -735,17 +1319,61 @@ def create_reply(sender: str, text: str):
         )
 
     if radiator_results or kombi_results:
-        reply = "Fiyat Teklifi\n\n"
-        if radiator_results:
-            reply += "RADYATÖR\n\n" + "\n\n".join(radiator_results)
-        if kombi_results:
-            if radiator_results:
-                reply += "\n\n"
-            reply += "KOMBİ\n\n" + "\n\n".join(kombi_results)
-        reply += "\n\nGenel Toplam\n" + f"Nakit: {money_tl(total_nakit)} KDV Dahil\n" + f"Kart: {money_tl(total_kart)} KDV Dahil"
+        pdf_items = []
+
+        for line in lines:
+            measure, qty = find_radiator_measure(line)
+            if not measure:
+                continue
+            product = next((p for p in radiator_products if p["olcu"] == measure), None)
+            if not product:
+                continue
+            pdf_items.append({
+                "name": f"E.C.A. Panel Radyatör {measure}",
+                "qty": qty,
+                "nakit_unit": product["nakit"],
+                "kart_unit": product["kart"],
+                "nakit_total": product["nakit"] * qty,
+                "kart_total": product["kart"] * qty,
+            })
+
+        for kombi_item_text in kombi_results:
+            if kombi:
+                pdf_items.append({
+                    "name": kombi["name"],
+                    "qty": kombi_qty,
+                    "nakit_unit": kombi["nakit"],
+                    "kart_unit": kombi["kart"],
+                    "nakit_total": kombi["nakit"] * kombi_qty,
+                    "kart_total": kombi["kart"] * kombi_qty,
+                })
+
+        quote = {
+            "title": "Radyatör / Kombi Teklifi" if kombi_results else "Radyatör Teklifi",
+            "items": pdf_items,
+            "total_nakit": total_nakit,
+            "total_kart": total_kart,
+            "not_found": not_found,
+        }
+
+        pdf_path = generate_radyator_pdf(quote)
+
+        reply = (
+            "Fiyat teklifiniz hazırlanmıştır.\n\n"
+            f"Nakit Toplam: {money_tl(total_nakit)} KDV Dahil\n"
+            f"Kart Toplam: {money_tl(total_kart)} KDV Dahil"
+        )
+
         if not_found:
             reply += "\n\nBulunamayan ölçüler:\n" + "\n".join(not_found)
-        return reply
+
+        return {
+            "text": reply,
+            "document_path": pdf_path,
+            "filename": os.path.basename(pdf_path),
+            "caption": reply,
+        }
+
 
     if "merhaba" in text_lower or "selam" in text_lower or text_lower == "sa":
         return (
