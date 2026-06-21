@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+import json
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -24,6 +25,7 @@ import qrcode
 
 processed_message_ids = set()
 KAZAN_SESSIONS = {}
+ADMIN_DISCOUNT_SESSIONS = {}
 
 app = FastAPI()
 
@@ -36,6 +38,16 @@ KOMBI_FILE = "kombi_listesi.xlsx"
 KAZAN_FILE = os.getenv("KAZAN_FILE", "KAZAN_BOT_AB_BACA_DUZENLI.xlsx")
 VAT_RATE = 0.20
 GRAPH_VERSION = "v20.0"
+
+ADMIN_WHATSAPP_NUMBERS = [
+    n.strip() for n in os.getenv("ADMIN_WHATSAPP_NUMBERS", "").split(",")
+    if n.strip()
+]
+ADMIN_DISCOUNT_CODE = os.getenv("ADMIN_DISCOUNT_CODE", "pramid").lower().strip()
+DISCOUNT_OVERRIDE_FILE = os.getenv(
+    "DISCOUNT_OVERRIDE_FILE",
+    os.path.join(tempfile.gettempdir(), "pramid_discount_overrides.json")
+)
 
 
 @app.get("/")
@@ -125,6 +137,281 @@ def to_float(value, default=0.0):
         return default
 
 
+
+def normalize_phone_number(phone):
+    return re.sub(r"\D+", "", str(phone or ""))
+
+
+def is_admin_sender(sender):
+    sender_norm = normalize_phone_number(sender)
+    return any(sender_norm == normalize_phone_number(n) for n in ADMIN_WHATSAPP_NUMBERS)
+
+
+def normalize_discount_product(value):
+    clean = normalize_text(value)
+    if clean in ["1", "kazan", "kazanim", "kazanlar"]:
+        return "KAZAN"
+    if clean in ["2", "radyator", "radyatör", "petek", "petekler", "radyatorler", "radyatörler"]:
+        return "RADYATOR"
+    if clean in ["3", "hepsi", "tum", "tumu", "tüm", "tümü"]:
+        return "ALL"
+    return None
+
+
+def product_label(product_type):
+    if product_type == "KAZAN":
+        return "Kazan"
+    if product_type == "RADYATOR":
+        return "Radyatör"
+    if product_type == "ALL":
+        return "Kazan + Radyatör"
+    return "Bilinmeyen"
+
+
+def load_discount_overrides():
+    try:
+        if os.path.exists(DISCOUNT_OVERRIDE_FILE):
+            with open(DISCOUNT_OVERRIDE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Eski düz format desteği:
+            # {"NAKIT": 43, "KART": 38}
+            if "NAKIT" in data or "KART" in data:
+                return {
+                    "KAZAN": {
+                        "NAKIT": float(data.get("NAKIT", data.get("nakit", 0))),
+                        "KART": float(data.get("KART", data.get("kart", 0))),
+                    }
+                }
+
+            clean = {}
+            for group in ["KAZAN", "RADYATOR"]:
+                group_data = data.get(group, {})
+                clean[group] = {}
+                if "NAKIT" in group_data:
+                    clean[group]["NAKIT"] = float(group_data["NAKIT"])
+                if "KART" in group_data:
+                    clean[group]["KART"] = float(group_data["KART"])
+            return clean
+
+    except Exception as e:
+        print("İskonto override okunamadı:", e, flush=True)
+
+    return {"KAZAN": {}, "RADYATOR": {}}
+
+
+def save_discount_overrides(product_type, nakit=None, kart=None):
+    current = load_discount_overrides()
+
+    target_groups = ["KAZAN", "RADYATOR"] if product_type == "ALL" else [product_type]
+
+    for group in target_groups:
+        current.setdefault(group, {})
+        if nakit is not None:
+            current[group]["NAKIT"] = float(nakit)
+        if kart is not None:
+            current[group]["KART"] = float(kart)
+
+    with open(DISCOUNT_OVERRIDE_FILE, "w", encoding="utf-8") as f:
+        json.dump(current, f, ensure_ascii=False, indent=2)
+
+    return current
+
+
+def get_runtime_discount(tip, product_type="KAZAN"):
+    data = load_discount_overrides()
+    group = data.get(product_type, {})
+    key = normalize_header_name(tip)
+
+    if key == "NAKIT" and "NAKIT" in group:
+        return float(group["NAKIT"])
+    if key == "KART" and "KART" in group:
+        return float(group["KART"])
+
+    return None
+
+
+def parse_discount_values(text):
+    clean = normalize_text(text)
+    parts = clean.split()
+
+    nums = [float(n.replace(",", ".")) for n in re.findall(r"\d+(?:[\.,]\d+)?", text)]
+
+    nakit = None
+    kart = None
+
+    if "nakit" in parts:
+        idx = parts.index("nakit")
+        if idx + 1 < len(parts):
+            nakit = to_float(parts[idx + 1], None)
+
+    if "kart" in parts:
+        idx = parts.index("kart")
+        if idx + 1 < len(parts):
+            kart = to_float(parts[idx + 1], None)
+
+    # Kısa kullanım: "43 38"
+    if nakit is None and kart is None and len(nums) >= 2:
+        nakit = nums[0]
+        kart = nums[1]
+
+    return nakit, kart
+
+
+def admin_discount_help():
+    current = load_discount_overrides()
+
+    def group_line(group):
+        data = current.get(group, {})
+        nakit = data.get("NAKIT")
+        kart = data.get("KART")
+        return (
+            f"{product_label(group)}\\n"
+            f"  Nakit: %{nakit:g}" if nakit is not None else f"{product_label(group)}\\n  Nakit: Excel değeri"
+        ) + (
+            f"\\n  Kart: %{kart:g}" if kart is not None else "\\n  Kart: Excel değeri"
+        )
+
+    lines = [
+        "PRAMID yönetici iskonto paneli",
+        "",
+        "Başlatmak için:",
+        f"{ADMIN_DISCOUNT_CODE} iskonto",
+        "",
+        "Tek mesajla kullanım:",
+        f"{ADMIN_DISCOUNT_CODE} kazan iskonto 43 38",
+        f"{ADMIN_DISCOUNT_CODE} radyatör iskonto 43 38",
+        f"{ADMIN_DISCOUNT_CODE} hepsi iskonto 43 38",
+        "",
+        "Mevcut değerler:",
+        group_line("KAZAN"),
+        "",
+        group_line("RADYATOR"),
+    ]
+    return "\\n".join(lines)
+
+
+def ask_discount_product():
+    return (
+        "Hangi ürün grubunun iskontosunu değiştireyim?\\n\\n"
+        "1 - Kazan\\n"
+        "2 - Radyatör\\n"
+        "3 - Hepsi\\n\\n"
+        "İptal için: iptal"
+    )
+
+
+def ask_discount_values(product_type):
+    return (
+        f"{product_label(product_type)} için yeni iskonto oranlarını yazınız.\\n\\n"
+        "Örnek:\\n"
+        "43 38\\n\\n"
+        "veya:\\n"
+        "nakit 43 kart 38"
+    )
+
+
+def finish_discount_update(product_type, nakit, kart):
+    if nakit is None and kart is None:
+        return "İskonto değerini anlayamadım. Örnek: 43 38"
+
+    if nakit is not None and not (0 <= float(nakit) <= 100):
+        return "Nakit iskonto 0 ile 100 arasında olmalıdır."
+
+    if kart is not None and not (0 <= float(kart) <= 100):
+        return "Kart iskonto 0 ile 100 arasında olmalıdır."
+
+    updated = save_discount_overrides(product_type, nakit=nakit, kart=kart)
+
+    target_groups = ["KAZAN", "RADYATOR"] if product_type == "ALL" else [product_type]
+
+    lines = [
+        "İskonto güncellendi.",
+        "",
+        f"Ürün grubu: {product_label(product_type)}",
+        "",
+    ]
+
+    for group in target_groups:
+        data = updated.get(group, {})
+        lines.append(f"{product_label(group)}")
+        lines.append(f"  Nakit: %{data.get('NAKIT', 0):g}")
+        lines.append(f"  Kart: %{data.get('KART', 0):g}")
+
+    lines.extend([
+        "",
+        "Not: Bu değerler bot çalıştığı sürece geçerlidir. Render yeniden deploy/restart olursa Excel değerleri tekrar esas alınabilir."
+    ])
+
+    return "\\n".join(lines)
+
+
+def handle_admin_discount_command(sender, text):
+    if not is_admin_sender(sender):
+        return None
+
+    clean = normalize_text(text)
+
+    if sender in ADMIN_DISCOUNT_SESSIONS:
+        state = ADMIN_DISCOUNT_SESSIONS.get(sender, {})
+        step = state.get("step")
+
+        if clean in ["iptal", "vazgec", "cancel"]:
+            ADMIN_DISCOUNT_SESSIONS.pop(sender, None)
+            return "İskonto güncelleme iptal edildi."
+
+        if step == "ASK_PRODUCT":
+            product_type = normalize_discount_product(clean)
+            if not product_type:
+                return ask_discount_product()
+
+            state["product_type"] = product_type
+            state["step"] = "ASK_VALUES"
+            return ask_discount_values(product_type)
+
+        if step == "ASK_VALUES":
+            product_type = state.get("product_type")
+            nakit, kart = parse_discount_values(text)
+            ADMIN_DISCOUNT_SESSIONS.pop(sender, None)
+            return finish_discount_update(product_type, nakit, kart)
+
+        ADMIN_DISCOUNT_SESSIONS.pop(sender, None)
+
+    parts = clean.split()
+
+    if not parts or parts[0] != ADMIN_DISCOUNT_CODE:
+        return None
+
+    if len(parts) == 1 or "yardim" in parts or "yardım" in text.lower():
+        return admin_discount_help()
+
+    if "iskonto" not in parts:
+        return admin_discount_help()
+
+    product_type = None
+    for p in parts:
+        maybe = normalize_discount_product(p)
+        if maybe:
+            product_type = maybe
+            break
+
+    # Sadece "pramid iskonto" yazıldıysa adım adım sor
+    nakit, kart = parse_discount_values(text)
+
+    if not product_type:
+        ADMIN_DISCOUNT_SESSIONS[sender] = {"step": "ASK_PRODUCT"}
+        return ask_discount_product()
+
+    if nakit is None and kart is None:
+        ADMIN_DISCOUNT_SESSIONS[sender] = {
+            "step": "ASK_VALUES",
+            "product_type": product_type,
+        }
+        return ask_discount_values(product_type)
+
+    return finish_discount_update(product_type, nakit, kart)
+
+
 def extract_quantity(text):
     clean = normalize_text(text)
     patterns = [r"(\d+)\s*(adet|ad|tane|tn)", r"(adet|ad|tane|tn)\s*(\d+)"]
@@ -176,12 +463,23 @@ def find_radiator_measure(line):
 def load_radiators():
     df = pd.read_excel(RADYATOR_FILE)
     df.columns = [str(c).strip().upper() for c in df.columns]
+
+    runtime_nakit = get_runtime_discount("NAKIT", "RADYATOR")
+    runtime_kart = get_runtime_discount("KART", "RADYATOR")
+
     products = []
     for _, row in df.iterrows():
         olcu = str(row["ÖLÇÜ"]).strip().upper().replace(" ", "")
         liste = to_float(row["LİSTE FİYATI"])
-        nakit_iskonto = to_float(row["NAKİT İSKONTO"])
-        kart_iskonto = to_float(row["KART İSKONTO"])
+
+        nakit_iskonto = runtime_nakit
+        kart_iskonto = runtime_kart
+
+        if nakit_iskonto is None:
+            nakit_iskonto = to_float(row["NAKİT İSKONTO"])
+        if kart_iskonto is None:
+            kart_iskonto = to_float(row["KART İSKONTO"])
+
         products.append({
             "olcu": olcu,
             "nakit": round(liste * (1 - nakit_iskonto / 100)),
@@ -347,6 +645,10 @@ def load_kazan_excel():
 
 
 def get_discount(data, tip):
+    runtime_value = get_runtime_discount(tip, "KAZAN")
+    if runtime_value is not None:
+        return runtime_value
+
     df = data["iskontolar"]
     row = df_filter_eq(df, ["TİP", "TIP"], tip)
     if row.empty:
@@ -1263,6 +1565,10 @@ def continue_kazan_flow(sender, text):
 
 def create_reply(sender: str, text: str):
     text_lower = normalize_text(text)
+
+    admin_result = handle_admin_discount_command(sender, text)
+    if admin_result is not None:
+        return admin_result
 
     if sender in KAZAN_SESSIONS:
         return continue_kazan_flow(sender, text)
