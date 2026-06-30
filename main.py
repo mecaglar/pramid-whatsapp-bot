@@ -856,10 +856,16 @@ def build_kazan_quote(kazan_adedi, kw, hot_water, has_boiler):
         add_line(items, get_accessory(data, key), multiplier)
 
     # Opsiyonel ekipmanlar: 16 kazanlık çarpanla eklenir.
-    # İstersen burada multiplier yerine 1 yazarak sabit yapabiliriz.
+    # Sıcak su seçildiyse sistemde 3 yollu vana vardır.
+    # Yeni kural: 3 yollu vana varsa AF14 adedi 1 adet artırılır.
     if hot_water:
         for key in get_rule_products(data, "SICAK_SU"):
-            add_line(items, get_accessory(data, key), multiplier)
+            qty = multiplier
+
+            if normalize_header_name(key) == "AF14":
+                qty += 1
+
+            add_line(items, get_accessory(data, key), qty)
 
     if has_boiler:
         for key in get_rule_products(data, "BOYLER_VAR"):
