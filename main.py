@@ -49,6 +49,7 @@ DISCOUNT_OVERRIDE_FILE = os.getenv(
     "DISCOUNT_OVERRIDE_FILE",
     os.path.join(tempfile.gettempdir(), "pramid_discount_overrides.json")
 )
+DISCOUNT_OVERRIDE_TTL_SECONDS = int(os.getenv("DISCOUNT_OVERRIDE_TTL_SECONDS", "900"))  # 15 dakika
 
 
 @app.get("/")
@@ -235,11 +236,66 @@ def read_radyator_discounts_from_excel():
         return {}
 
 
+def _read_temp_discount_overrides_raw():
+    try:
+        if not os.path.exists(DISCOUNT_OVERRIDE_FILE):
+            return {}
+        with open(DISCOUNT_OVERRIDE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print("Geçici iskonto dosyası okunamadı:", e, flush=True)
+        return {}
+
+
+def _write_temp_discount_overrides_raw(data):
+    try:
+        with open(DISCOUNT_OVERRIDE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Geçici iskonto dosyası yazılamadı:", e, flush=True)
+
+
 def load_discount_overrides():
-    return {
+    # Önce Excel'deki kalıcı iskonto değerlerini okur.
+    # Sonra varsa süresi dolmamış yönetici güncellemesini 15 dakikalığına üzerine uygular.
+    result = {
         "KAZAN": read_kazan_discounts_from_excel(),
         "RADYATOR": read_radyator_discounts_from_excel(),
     }
+
+    raw = _read_temp_discount_overrides_raw()
+    now_ts = datetime.now().timestamp()
+    active_raw = {}
+    changed = False
+
+    for group, payload in raw.items():
+        if group not in ["KAZAN", "RADYATOR"] or not isinstance(payload, dict):
+            changed = True
+            continue
+
+        expires_at = float(payload.get("expires_at", 0) or 0)
+        if expires_at <= now_ts:
+            changed = True
+            continue
+
+        values = payload.get("values", {})
+        if not isinstance(values, dict):
+            changed = True
+            continue
+
+        active_raw[group] = payload
+
+        if "NAKIT" in values and values["NAKIT"] is not None:
+            result.setdefault(group, {})["NAKIT"] = float(values["NAKIT"])
+        if "KART" in values and values["KART"] is not None:
+            result.setdefault(group, {})["KART"] = float(values["KART"])
+
+    # Süresi dolan geçici değerleri dosyadan temizle.
+    if changed:
+        _write_temp_discount_overrides_raw(active_raw)
+
+    return result
 
 
 def update_kazan_excel_discount(nakit=None, kart=None):
@@ -306,12 +362,36 @@ def update_radyator_excel_discount(nakit=None, kart=None):
 
 
 def save_discount_overrides(product_type, nakit=None, kart=None):
-    if product_type in ["KAZAN", "ALL"]:
-        update_kazan_excel_discount(nakit=nakit, kart=kart)
+    # Yönetici iskontoları artık Excel'e yazılmaz.
+    # 15 dakika boyunca geçici override olarak kullanılır; süre dolunca sistem otomatik Excel değerlerine döner.
+    raw = _read_temp_discount_overrides_raw()
+    now_ts = datetime.now().timestamp()
+    expires_at = now_ts + DISCOUNT_OVERRIDE_TTL_SECONDS
 
-    if product_type in ["RADYATOR", "ALL"]:
-        update_radyator_excel_discount(nakit=nakit, kart=kart)
+    target_groups = ["KAZAN", "RADYATOR"] if product_type == "ALL" else [product_type]
 
+    for group in target_groups:
+        existing = raw.get(group, {})
+        existing_expires = float(existing.get("expires_at", 0) or 0) if isinstance(existing, dict) else 0
+        existing_values = existing.get("values", {}) if isinstance(existing, dict) else {}
+
+        if existing_expires <= now_ts or not isinstance(existing_values, dict):
+            existing_values = {}
+
+        values = dict(existing_values)
+
+        if nakit is not None:
+            values["NAKIT"] = float(nakit)
+        if kart is not None:
+            values["KART"] = float(kart)
+
+        raw[group] = {
+            "values": values,
+            "expires_at": expires_at,
+            "updated_at": now_ts,
+        }
+
+    _write_temp_discount_overrides_raw(raw)
     return load_discount_overrides()
 
 
@@ -424,12 +504,12 @@ def finish_discount_update(product_type, nakit, kart):
     try:
         updated = save_discount_overrides(product_type, nakit=nakit, kart=kart)
     except Exception as e:
-        return f"İskonto Excel'e yazılırken hata oluştu: {e}"
+        return f"Geçici iskonto kaydedilirken hata oluştu: {e}"
 
     target_groups = ["KAZAN", "RADYATOR"] if product_type == "ALL" else [product_type]
 
     lines = [
-        "İskonto güncellendi ve Excel'e kaydedildi.",
+        "İskonto güncellendi. Bu değişiklik 15 dakika geçerlidir.",
         "",
         f"Ürün grubu: {product_label(product_type)}",
         "",
@@ -443,7 +523,7 @@ def finish_discount_update(product_type, nakit, kart):
 
     lines.extend([
         "",
-        "Yeni teklifler bu Excel değerleriyle hesaplanacaktır."
+        "15 dakika sonra sistem otomatik olarak Excel değerlerine dönecektir."
     ])
 
     return "\n".join(lines)
