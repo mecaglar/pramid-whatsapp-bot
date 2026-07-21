@@ -51,6 +51,11 @@ DISCOUNT_OVERRIDE_FILE = os.getenv(
     os.path.join(tempfile.gettempdir(), "pramid_discount_overrides.json")
 )
 DISCOUNT_OVERRIDE_TTL_SECONDS = int(os.getenv("DISCOUNT_OVERRIDE_TTL_SECONDS", "900"))  # 15 dakika
+TEKLIF_RECORD_DIR = os.getenv("TEKLIF_RECORD_DIR", "kayitlar")
+TEKLIF_RECORD_FILE = os.getenv(
+    "TEKLIF_RECORD_FILE",
+    os.path.join(TEKLIF_RECORD_DIR, "pramid_teklif_kayitlari.json")
+)
 
 
 @app.get("/")
@@ -140,7 +145,68 @@ def to_float(value, default=0.0):
         return default
 
 
+def _read_teklif_records_raw():
+    try:
+        if not os.path.exists(TEKLIF_RECORD_FILE):
+            return []
 
+        with open(TEKLIF_RECORD_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data if isinstance(data, list) else []
+
+    except Exception as e:
+        print("Teklif kayıt dosyası okunamadı:", e, flush=True)
+        return []
+
+
+def _write_teklif_records_raw(records):
+    try:
+        record_dir = os.path.dirname(TEKLIF_RECORD_FILE)
+        if record_dir:
+            os.makedirs(record_dir, exist_ok=True)
+
+        with open(TEKLIF_RECORD_FILE, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        print("Teklif kayıt dosyası yazılamadı:", e, flush=True)
+
+
+def save_teklif_record(
+    teklif_no,
+    sender,
+    urun_grubu,
+    nakit_toplam,
+    kart_toplam,
+    para_birimi,
+    pdf_path,
+    detay=None,
+):
+    records = _read_teklif_records_raw()
+
+    now = datetime.now()
+
+    record = {
+        "teklif_no": str(teklif_no),
+        "tarih": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "musteri_whatsapp": normalize_phone_number(sender),
+        "urun_grubu": str(urun_grubu),
+        "nakit_toplam": float(nakit_toplam or 0),
+        "kart_toplam": float(kart_toplam or 0),
+        "para_birimi": str(para_birimi),
+        "pdf_dosyasi": os.path.basename(pdf_path) if pdf_path else "",
+        "pdf_path": str(pdf_path or ""),
+        "durum": "GONDERILDI",
+        "detay": detay or {},
+    }
+
+    records.append(record)
+    _write_teklif_records_raw(records)
+
+    print("Teklif kaydı oluşturuldu:", teklif_no, flush=True)
+
+    return record
 def normalize_phone_number(phone):
     return re.sub(r"\D+", "", str(phone or ""))
 
@@ -1407,7 +1473,7 @@ def generate_kazan_pdf(quote):
         canvasmaker=NumberedCanvas,
     )
 
-    return path
+    return path, teklif_no
 
 
 def generate_radiator_pdf(quote):
@@ -1696,7 +1762,7 @@ def generate_radiator_pdf(quote):
         canvasmaker=NumberedCanvas,
     )
 
-    return path
+    return path, teklif_no
 
 def start_kazan_flow(sender, text):
     qty, kw = parse_kazan_request(text)
@@ -1750,8 +1816,28 @@ def continue_kazan_flow(sender, text):
                 hot_water=bool(state["hot_water"]),
                 has_boiler=bool(state["has_boiler"]),
             )
-            pdf_path = generate_kazan_pdf(quote)
+            pdf_path, teklif_no = generate_kazan_pdf(quote)
+
+            save_teklif_record(
+                teklif_no=teklif_no,
+                sender=sender,
+                urun_grubu="KAZAN",
+                nakit_toplam=quote["total_nakit"],
+                kart_toplam=quote["total_kart"],
+                para_birimi="EUR",
+                pdf_path=pdf_path,
+                detay={
+                    "kazan_adedi": quote["kazan_adedi"],
+                    "kw": quote["kw"],
+                    "hot_water": quote["hot_water"],
+                    "has_boiler": quote["has_boiler"],
+                    "nakit_disc": quote["nakit_disc"],
+                    "kart_disc": quote["kart_disc"],
+                },
+            )
+            
             KAZAN_SESSIONS.pop(sender, None)
+            
             return {
                 "document_path": pdf_path,
                 "filename": os.path.basename(pdf_path),
@@ -1861,6 +1947,24 @@ def create_reply(sender: str, text: str):
 
         pdf_path = generate_radiator_pdf(quote)
 
+        pdf_path, teklif_no = generate_radiator_pdf(quote)
+
+        save_teklif_record(
+            teklif_no=teklif_no,
+            sender=sender,
+            urun_grubu="RADYATOR_KOMBI",
+            nakit_toplam=total_nakit,
+            kart_toplam=total_kart,
+            para_birimi="TL",
+            pdf_path=pdf_path,
+            detay={
+                "kalem_sayisi": len(radiator_items + kombi_items),
+                "radyator_kalem_sayisi": len(radiator_items),
+                "kombi_kalem_sayisi": len(kombi_items),
+                "bulunamayan_olculer": not_found,
+            },
+        )
+        
         caption = (
             "Fiyat teklifiniz hazırlanmıştır.\n\n"
             f"Nakit Toplam: {money_tl(total_nakit)} KDV Dahil\n"
