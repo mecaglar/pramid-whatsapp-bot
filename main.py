@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, Image
 from reportlab.pdfgen import canvas
 import qrcode
 from openpyxl import load_workbook
@@ -39,6 +39,7 @@ KOMBI_FILE = "kombi_listesi.xlsx"
 KAZAN_FILE = os.getenv("KAZAN_FILE", "KAZAN_BOT_AB_BACA_DUZENLI.xlsx")
 VAT_RATE = 0.20
 GRAPH_VERSION = "v20.0"
+LOGO_FILE = os.getenv("LOGO_FILE", "pramid_logo.jpeg")
 
 ADMIN_WHATSAPP_NUMBERS = [
     n.strip() for n in os.getenv("ADMIN_WHATSAPP_NUMBERS", "").split(",")
@@ -1015,6 +1016,7 @@ def short_kazan_text(quote):
 
 
 def setup_pdf_fonts():
+    
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -1026,8 +1028,19 @@ def setup_pdf_fonts():
     return "Helvetica", "Helvetica-Bold"
 
 
+def get_pdf_logo(width=42 * mm, height=22 * mm):
+    try:
+        if LOGO_FILE and os.path.exists(LOGO_FILE):
+            logo = Image(LOGO_FILE)
+            logo._restrictSize(width, height)
+            return logo
+    except Exception as e:
+        print("Logo PDF'e eklenemedi:", e, flush=True)
 
+    return None
+    
 class NumberedCanvas(canvas.Canvas):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._saved_page_states = []
