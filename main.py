@@ -1232,19 +1232,23 @@ def generate_kazan_pdf(quote):
     teklif_no = f"PRM-KZN-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}"
     tarih = now.strftime("%d.%m.%Y")
 
+    logo = get_pdf_logo()
+
+    header_left = logo if logo else Paragraph(
+        "<b>PRAMID</b><br/><font size='8'>İNŞAAT</font>",
+        ParagraphStyle(
+            "LogoText",
+            parent=normal,
+            fontName=bold_font,
+            fontSize=18,
+            leading=18,
+            textColor=navy,
+        )
+    )
+    
     header = Table(
         [[
-            Paragraph(
-                "<b>PRAMID</b><br/><font size='8'>İNŞAAT</font>",
-                ParagraphStyle(
-                    "LogoText",
-                    parent=normal,
-                    fontName=bold_font,
-                    fontSize=18,
-                    leading=18,
-                    textColor=navy,
-                )
-            ),
+            header_left,
             [
                 Paragraph("PRAMID İNŞAAT", title_style),
                 Paragraph("FİYAT TEKLİFİ", subtitle_style),
@@ -1518,19 +1522,23 @@ def generate_radiator_pdf(quote):
     teklif_no = f"PRM-RAD-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}"
     tarih = now.strftime("%d.%m.%Y")
 
+    logo = get_pdf_logo()
+
+    header_left = logo if logo else Paragraph(
+        "<b>PRAMID</b><br/><font size='8'>İNŞAAT</font>",
+        ParagraphStyle(
+            "RadLogoText",
+            parent=normal,
+            fontName=bold_font,
+            fontSize=18,
+            leading=18,
+            textColor=navy,
+        )
+    )
+    
     header = Table(
         [[
-            Paragraph(
-                "<b>PRAMID</b><br/><font size='8'>İNŞAAT</font>",
-                ParagraphStyle(
-                    "RadLogoText",
-                    parent=normal,
-                    fontName=bold_font,
-                    fontSize=18,
-                    leading=18,
-                    textColor=navy,
-                )
-            ),
+            header_left,
             [
                 Paragraph("PRAMID İNŞAAT", title_style),
                 Paragraph("FİYAT TEKLİFİ", subtitle_style),
