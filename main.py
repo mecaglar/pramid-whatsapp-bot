@@ -1338,18 +1338,16 @@ def generate_kazan_pdf(quote):
     story.append(Spacer(1, 7 * mm))
 
     summary_data = [
-        [Paragraph("Nakit Toplam", summary_label), Paragraph(money_eur(quote["total_nakit_haric"]), summary_value)],
-        [Paragraph("Nakit KDV Dahil Toplam", summary_label), Paragraph(money_eur(quote["total_nakit"]), summary_value)],
-        [Paragraph("Kart Toplam", summary_label), Paragraph(money_eur(quote["total_kart_haric"]), summary_value)],
-        [Paragraph("Kart KDV Dahil Toplam", summary_label), Paragraph(money_eur(quote["total_kart"]), summary_value)],
-    ]
+    [Paragraph("Nakit KDV Dahil Toplam", summary_label), Paragraph(money_eur(quote["total_nakit"]), summary_value)],
+    [Paragraph("Kart KDV Dahil Toplam", summary_label), Paragraph(money_eur(quote["total_kart"]), summary_value)],
+]
 
     summary_table = Table(summary_data, colWidths=[65 * mm, 45 * mm], hAlign="RIGHT")
 
     summary_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), mid_bg),
         ("BOX", (0, 0), (-1, -1), 0.8, navy),
-        ("LINEBELOW", (0, 0), (-1, 2), 0.4, border),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.4, border),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
